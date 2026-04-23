@@ -1,10 +1,12 @@
 name: Article Ingestion Pipeline
 
 on:
+  push:
+    branches:
+        - production
   schedule:
     - cron: "0 1-9/3 * * 1-5" # every 3 hours from 1am-9am UTC, Monday-Friday
-  workflow_dispatch:
-    # allows you to trigger it manually from GitHub UI
+  workflow_dispatch: # allows you to trigger it manually from GitHub UI
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true 
