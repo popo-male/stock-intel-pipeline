@@ -3,6 +3,7 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from typing import Any, cast
 
 from db.connection import get_db_connection
+from core.logger import logger
 
 
 class Analyzer:
@@ -60,49 +61,45 @@ class Analyzer:
     def process_unscored_articles(self) -> None:
         """Fetches articles without sentiment scores and updates sentiment values."""
         conn = get_db_connection()
-        cursor = conn.cursor()
+        unscored_articles = []
+        
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT id, title, summary FROM articles WHERE sentiment_score IS NULL")
+                unscored_articles = cursor.fetchall()
 
-        cursor.execute(
-            "SELECT id, title, summary FROM articles_v2 WHERE sentiment_score IS NULL"
-        )
-        unscored_articles = cursor.fetchall()
+            if not unscored_articles:
+                logger.info("No unscored articles remaining in database queue.")
+                return
 
-        if not unscored_articles:
-            print("No unscored articles remaining.")
-            conn.close()
-            return
+            logger.info(f"Analyzing sentiment configurations for {len(unscored_articles)} records...")
+            update_count = 0
 
-        print(f"Analyzing sentiment for {len(unscored_articles)} articles...")
-        update_count = 0
-
-        for article in unscored_articles:
-            row = cast(dict[str, Any], article)
-
-            # Execute weighted calculation
-            sentiment = self.calculate_sentiment(
-                title=row.get("title", ""), summary=row.get("summary", "")
-            )
-
-            try:
-                # Update individual record immediately using an isolated transaction
-                with conn:
-                    with conn.cursor() as update_cursor:
-                        update_cursor.execute(
-                            """
-                            UPDATE articles_v2
-                            SET sentiment_score = %s, sentiment_label = %s
-                            WHERE id = %s
-                            """,
-                            (sentiment["score"], sentiment["label"], row["id"]),
-                        )
-                update_count += 1
-            except Exception as exc:
-                print(
-                    f"Failed to commit sentiment update for article ID {row['id']}: {exc}"
+            for article in unscored_articles:
+                row = cast(dict[str, Any], article)
+                sentiment = self.calculate_sentiment(
+                    title=row.get("title", ""), 
+                    summary=row.get("summary", "")
                 )
 
-        conn.close()
-        print(f"Successfully updated sentiment metrics for {update_count} articles.")
+                try:
+                    with conn:
+                        with conn.cursor() as update_cursor:
+                            update_cursor.execute(
+                                """
+                                UPDATE articles
+                                SET sentiment_score = %s, sentiment_label = %s
+                                WHERE id = %s
+                                """,
+                                (sentiment["score"], sentiment["label"], row["id"]),
+                            )
+                    update_count += 1
+                except Exception as exc:
+                    logger.error(f"Failed to commit metrics for record ID {row['id']}: {exc}")
+
+            logger.info(f"Successfully evaluated and saved {update_count} records.")
+        finally:
+            conn.close()
 
 
 def process_unscored_articles() -> None:
