@@ -1,68 +1,102 @@
 import time
 from email.utils import parsedate_to_datetime
-from typing import Any
+from typing import Any, Optional
 
 import feedparser
 
 from core.config import AppConfig
-from db.repository import upload_articles
+from core.logger import logger
+from db.connection import get_db_connection
+from db.repository import insert_article, insert_ticker, link_article_to_ticker
 from scraper.helpers import clean_html
 
 
 def fetch_news(ticker: str, rss_base_url: str) -> list[dict[str, Any]]:
     rss_url = rss_base_url.format(ticker=ticker)
     feed = feedparser.parse(rss_url)
-
     articles: list[dict[str, Any]] = []
 
     for entry in feed.entries:
         try:
             published_raw = entry.get("published", "")
-            if not isinstance(published_raw, str):
-                raise ValueError("Invalid or missing published date")
-
-            title_raw = entry.get("title", "")
-            link_raw = entry.get("link", "")
-            summary_raw = entry.get("summary", "")
-
-            title = title_raw if isinstance(title_raw, str) else ""
-            link = link_raw if isinstance(link_raw, str) else ""
-            summary = summary_raw if isinstance(summary_raw, str) else ""
-
-            published_date = parsedate_to_datetime(published_raw)
+            if not isinstance(published_raw, str) or not published_raw:
+                continue
 
             articles.append(
                 {
                     "ticker": ticker,
-                    "title": title,
-                    "url": link,
-                    "summary": clean_html(summary),
-                    "published_at": published_date,
+                    "title": str(entry.get("title", "")),
+                    "url": str(entry.get("link", "")),
+                    "summary": clean_html(str(entry.get("summary", ""))),
+                    "published_at": parsedate_to_datetime(published_raw),
                     "source": "Yahoo Finance",
                 }
             )
         except Exception as exc:
-            print(f"Error parsing article for {ticker}: {exc}")
+            logger.error(f"Error parsing article for {ticker}: {exc}", exc_info=True)
 
     return articles
 
 
 def run_scraper(config: AppConfig) -> None:
-    """Iterates through the watchlist and processes all news"""
-    total_new = 0
+    total_new_articles = 0
+    total_new_links = 0
+    conn = get_db_connection()
 
-    for ticket in config.scraper.watchlist:
-        articles = fetch_news(ticket, config.scraper.rss_base_url)
+    try:
+        for ticker_symbol in config.scraper.watchlist:
+            articles = fetch_news(ticker_symbol, config.scraper.rss_base_url)
 
-        if articles:
-            new_count = upload_articles(articles)
-            total_new += new_count
-            print(
-                f"Fetched {len(articles)} articles for {ticket}. Inserted {new_count} new."
-            )
-        else:
-            print(f"{ticket}: No articles found.")
+            if not articles:
+                logger.info(f"{ticker_symbol}: No active feed entries discovered.")
+                time.sleep(config.scraper.sleep_interval)
+                continue
 
-        time.sleep(config.scraper.sleep_interval)
+            ticker_new_articles = 0
+            ticker_new_links = 0
 
-    print(f"Scraping complete! {total_new} new articles stored.")
+            try:
+                with conn:
+                    with conn.cursor() as cursor:
+                        ticker_id = insert_ticker(cursor, ticker_symbol)
+
+                        for article_data in articles:
+                            article_id: Optional[int] = insert_article(
+                                cursor, article_data
+                            )
+
+                            if article_id is None:
+                                cursor.execute(
+                                    "SELECT id FROM articles WHERE url = %s;",
+                                    (article_data["url"],),
+                                )
+                                res = cursor.fetchone()
+                                article_id = res["id"] if res else None
+
+                            if article_id:
+                                is_new_link = link_article_to_ticker(
+                                    cursor, article_id, ticker_id
+                                )
+                                if is_new_link:
+                                    ticker_new_links += 1
+                                    if not article_id:
+                                        ticker_new_articles += 1
+
+                total_new_articles += ticker_new_articles
+                total_new_links += ticker_new_links
+                logger.info(
+                    f"[{ticker_symbol}] Ingested {len(articles)} articles. (New: {ticker_new_articles}, Links: {ticker_new_links})"
+                )
+
+            except Exception as exc:
+                logger.error(
+                    f"Transaction block crash encountered for ticker {ticker_symbol}: {exc}",
+                    exc_info=True,
+                )
+
+            time.sleep(config.scraper.sleep_interval)
+    finally:
+        conn.close()
+        logger.info(
+            f"Scraping phase complete. Ingested {total_new_articles} master documents, created {total_new_links} joins."
+        )

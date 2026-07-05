@@ -1,23 +1,26 @@
-import json
 import time
-from urllib.parse import urlparse
+import json
 from typing import Any, cast
+from pydantic import BaseModel, Field
 
 from openai import OpenAI
 from core.settings import settings
 from db.connection import get_db_connection
 
 
+class OutputSchema(BaseModel):
+    bullets: list[str] = Field(
+        ...,
+        description="An array of 2 to 3 short bullet points summarizing the key facts.",
+    )
+    keywords: list[str] = Field(
+        ...,
+        description="An array of 3 to 5 highly relevant financial or tech keywords or tags.",
+    )
+
+
 class LLMProcessor:
     def __init__(self, client: OpenAI | None = None):
-        # Fail fast for obviously misconfigured settings.
-        if not settings.LLM_BASE_URL.strip():
-            raise ValueError("LLM_BASE_URL is empty")
-        if not settings.LLM_API_KEY.strip():
-            raise ValueError("LLM_API_KEY is empty")
-        if not settings.LLM_MODEL.strip():
-            raise ValueError("LLM_MODEL is empty")
-
         self.client = client or OpenAI(
             base_url=settings.LLM_BASE_URL,
             api_key=settings.LLM_API_KEY,
@@ -25,101 +28,98 @@ class LLMProcessor:
             max_retries=1,
         )
 
-    def generate_insights(self, title: str, summary: str) -> dict:
+    def generate_insights(self, title: str, summary: str) -> OutputSchema | None:
         """Uses LLM to generate bullet points and extract keywords."""
-        prompt = f"""
-        Analyze the following financial news article.
-        Title: {title}
-        Content: {summary}
-        
-        Provide the output STRICTLY as a JSON object with two keys:
-        1. "bullets": An array of 2 to 3 short bullet points summarizing the key facts.
-        2. "keywords": An array of 3 to 5 highly relevant financial/tech keywords or tags.
-        
-        Do not include any markdown formatting, preamble, or explanation. Just return the raw JSON.
-        """
+        prompt = f"Analyze the following financial news article.\nTitle: {title}\nContent: {summary}"
 
         try:
-            response = self.client.chat.completions.create(
+            response = self.client.beta.chat.completions.parse(
                 model=settings.LLM_MODEL,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a financial analyst backend service. Extract key metadata details from the user prompt structure.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                response_format=OutputSchema,
                 temperature=0.1,
             )
 
-            content = response.choices[0].message.content or ""
-            raw_output = content.strip()
+            return response.choices[0].message.parsed
 
-            if raw_output.startswith("```json"):
-                raw_output = raw_output[7:-3]
-
-            return json.loads(raw_output)
         except Exception as exc:
-            parsed = urlparse(settings.LLM_BASE_URL)
-            endpoint = parsed.netloc or settings.LLM_BASE_URL
             print(
-                "Error generating insights "
-                f"(type={type(exc).__name__}, endpoint={endpoint}, model={settings.LLM_MODEL}): {exc}"
+                f"Error generating structured insights with model {settings.LLM_MODEL}: {exc}"
             )
-            return {"bullets": [], "keywords": []}
+            return None
 
     def process_unsummarized_articles(self) -> None:
-        """Finds articles without LLM insights and processes them."""
+        """
+        Queries articles missing summaries using partial indexing.
+        Updates JSONB structures using single-row runtime transactions.
+        """
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        try:
-            cursor.execute("ALTER TABLE articles ADD COLUMN IF NOT EXISTS bullets TEXT")
-            cursor.execute(
-                "ALTER TABLE articles ADD COLUMN IF NOT EXISTS keywords TEXT"
-            )
-        except Exception:
-            pass
-
-        cursor.execute("SELECT id, title, summary FROM articles WHERE bullets IS NULL")
+        # Queries optimization leverages native JSONB partial indices
+        cursor.execute(
+            "SELECT id, title, summary FROM articles_v2 WHERE bullets IS NULL"
+        )
         unsummarized = cursor.fetchall()
 
         if not unsummarized:
-            print("No unsummarized articles found.")
+            print("No unsummarized articles remaining.")
             conn.close()
             return
 
-        print(f"Summarizing {len(unsummarized)} articles...")
-
+        print(f"Generating structured AI insights for {len(unsummarized)} articles...")
         update_count = 0
+
         for article in unsummarized:
             row = cast(dict[str, Any], article)
-            insights = self.generate_insights(row["title"], row["summary"])
 
-            if insights["bullets"] and insights["keywords"]:
-                bullets_json = json.dumps(insights["bullets"])
-                keywords_json = json.dumps(insights["keywords"])
+            # The API response is returned as a fully typed object instead of a text string
+            insights = self.generate_insights(
+                row.get("title", ""), row.get("summary", "")
+            )
 
-                cursor.execute(
-                    """
-                    UPDATE articles 
-                    SET bullets = %s, keywords = %s 
-                    WHERE id = %s
-                """,
-                    (bullets_json, keywords_json, row["id"]),
-                )
-                update_count += 1
+            if insights:
+                try:
+                    # Leverage single-row atomicity via isolated transaction manager blocks
+                    with conn:
+                        with conn.cursor() as update_cursor:
+                            update_cursor.execute(
+                                """
+                                UPDATE articles_v2 
+                                SET bullets = %s, keywords = %s 
+                                WHERE id = %s
+                                """,
+                                (
+                                    json.dumps(insights.bullets),
+                                    json.dumps(insights.keywords),
+                                    row["id"],
+                                ),
+                            )
+                    update_count += 1
+                except Exception as exc:
+                    print(
+                        f"Failed to commit AI insights for article ID {row['id']}: {exc}"
+                    )
 
-            time.sleep(2.5)
+            time.sleep(1.0)  # Throttling delay for rate-limits protection
 
-        conn.commit()
         conn.close()
-        print(f"Successfully generated insights for {update_count} articles.")
+        print(
+            f"Successfully generated structured insights for {update_count} articles."
+        )
 
         if settings.STRICT_LLM_FAILURE and unsummarized and update_count == 0:
             raise RuntimeError(
-                "LLM summarization failed for all articles. "
-                "Check LLM_BASE_URL/LLM_API_KEY/LLM_MODEL or provider network availability from GitHub Actions."
+                "LLM parsing completely failed or timed out across current active processing targets."
             )
 
 
-def generate_insights(title: str, summary: str) -> dict:
-    return LLMProcessor().generate_insights(title, summary)
-
-
+# Functional entry points matching original app architecture patterns
 def process_unsummarized_articles() -> None:
     LLMProcessor().process_unsummarized_articles()
