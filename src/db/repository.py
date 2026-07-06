@@ -79,26 +79,36 @@ def insert_ticker(cursor: Any, symbol: str, name: str | None = None) -> uuid.UUI
 
 def insert_article(cursor: Any, article: dict[str, Any]) -> uuid.UUID | None:
     """Insert an article into the database and return its ID."""
-    cursor.execute(
-        """
+    query = """
+    WITH new_row AS (
         INSERT INTO articles_v2 (title, url, summary, published_at, source)
         VALUES (%s, %s, %s, %s, %s)
         ON CONFLICT (url) DO NOTHING
-        RETURNING id;
-        """,
+        RETURNING id
+    )
+    SELECT id FROM new_row
+    UNION ALL
+    SELECT id FROM articles_v2 WHERE url = %s
+    LIMIT 1;
+    """
+    cursor.execute(
+        query,
         (
             article["title"],
             article["url"],
             article["summary"],
             article["published_at"],
             article["source"],
+            article["url"],  # Used for the fallback UNION ALL selector
         ),
     )
     result = cursor.fetchone()
     return result["id"] if result else None
 
 
-def link_article_to_ticker(cursor: Any, article_id: uuid.UUID, ticker_id: uuid.UUID) -> bool:
+def link_article_to_ticker(
+    cursor: Any, article_id: uuid.UUID, ticker_id: uuid.UUID
+) -> bool:
     """Link an article to a ticker in the database."""
     cursor.execute(
         """
