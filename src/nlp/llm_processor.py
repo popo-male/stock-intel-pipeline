@@ -1,12 +1,13 @@
-import time
 import json
+import time
 from typing import Any, cast
-from pydantic import BaseModel, Field
 
 from openai import OpenAI
+from pydantic import BaseModel, Field
+
+from src.core.logger import logger
 from src.core.settings import settings
 from src.db.connection import get_db_connection
-from src.core.logger import logger
 
 
 class OutputSchema(BaseModel):
@@ -26,30 +27,38 @@ class LLMProcessor:
             base_url=settings.LLM_BASE_URL,
             api_key=settings.LLM_API_KEY,
             timeout=30.0,
-            max_retries=1,
+            max_retries=5,
         )
 
     def generate_insights(self, title: str, summary: str) -> OutputSchema | None:
         """Uses LLM to generate bullet points and extract keywords."""
         prompt = f"Analyze the following financial news article.\nTitle: {title}\nContent: {summary}"
+        system_instruction = (
+            "You are a financial analyst backend service. Extract key metadata details from the user prompt. "
+            "Your response must be a valid JSON object matching this schema exactly:\n"
+            "{\n"
+            '  "bullets": ["string", "string"],\n'
+            '  "keywords": ["string", "string"]\n'
+            "}"
+        )
+
         try:
-            response = self.client.beta.chat.completions.parse(
+            response = self.client.chat.completions.create(
                 model=settings.LLM_MODEL,
                 messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a financial analyst backend service. Extract key metadata details.",
-                    },
+                    {"role": "system", "content": system_instruction},
                     {"role": "user", "content": prompt},
                 ],
-                response_format=OutputSchema,
+                response_format={"type": "json_object"},
                 temperature=0.1,
             )
-            return response.choices[0].message.parsed
+            raw_content = response.choices[0].message.content
+            if not raw_content:
+                return None
+
+            return OutputSchema.model_validate_json(raw_content)
         except Exception as exc:
-            logger.error(
-                f"Error extracting structured insights using {settings.LLM_MODEL}: {exc}"
-            )
+            logger.error(f"Error generating insights using {settings.LLM_MODEL}: {exc}")
             return None
 
     def process_unsummarized_articles(self) -> None:
@@ -67,12 +76,10 @@ class LLMProcessor:
                 unsummarized = cursor.fetchall()
 
             if not unsummarized:
-                logger.info("No text assets waiting for summary extractions.")
+                logger.info("No available records waiting for summary.")
                 return
 
-            logger.info(
-                f"Generating structured AI highlights for {len(unsummarized)} elements..."
-            )
+            logger.info(f"Generating insight for {len(unsummarized)} records...")
             update_count = 0
 
             for article in unsummarized:
@@ -103,11 +110,9 @@ class LLMProcessor:
                             f"Failed to commit metadata context updates on ID {row['id']}: {exc}"
                         )
 
-                time.sleep(1.0)
+                time.sleep(1.5)
 
-            logger.info(
-                f"Successfully processed structured AI summaries for {update_count} elements."
-            )
+            logger.info(f"Successfully processed summaries for {update_count} records.")
 
             if settings.STRICT_LLM_FAILURE and unsummarized and update_count == 0:
                 raise RuntimeError(

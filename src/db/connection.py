@@ -25,3 +25,13 @@ def get_db_connection():
     Usage remains identical: with get_db_connection() as conn:
     """
     return pool.connection()
+
+
+def close_pool():
+    """Closes the connection pool."""
+    if pool:
+        try:
+            pool.close()
+            logger.info("Database connection pool closed successfully.")
+        except Exception as e:
+            logger.error(f"Error closing connection pool: {e}")

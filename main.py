@@ -1,3 +1,4 @@
+from src.db.connection import close_pool
 from src.core.config import load_config
 from src.core.logger import logger
 from src.db.repository import setup_database
@@ -7,22 +8,26 @@ from src.scraper.fetcher import run_scraper
 
 
 def run() -> None:
-    config = load_config()
-    setup_database()
-
     logger.info("News Ingestion Pipeline Starting...")
-    # ingest data
-    run_scraper(config)
+    config = load_config()
 
-    # nlp processing (sentiment)
-    analyzer = Analyzer()
-    analyzer.process_unscored_articles()
+    try:
+        setup_database()
+        run_scraper(config)
 
-    # llm summaries
-    llm_processor = LLMProcessor()
-    llm_processor.process_unsummarized_articles()
+        # nlp processing (sentiment)
+        analyzer = Analyzer()
+        analyzer.process_unscored_articles()
 
-    logger.info("Pipeline execution complete!")
+        # llm summaries
+        llm_processor = LLMProcessor()
+        llm_processor.process_unsummarized_articles()
+
+        logger.info("Pipeline execution complete!")
+    except Exception as exc:
+        logger.error(f"Unhandled pipeline error: {exc}", exc_info=True)
+    finally:
+        close_pool()
 
 
 if __name__ == "__main__":
