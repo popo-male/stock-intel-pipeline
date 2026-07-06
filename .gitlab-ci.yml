@@ -34,8 +34,6 @@ run-pipeline:
     LLM_API_KEY: $SECRET_LLM_API_KEY
     LLM_MODEL: $VARS_LLM_MODEL
   script:
-    - uv venv .venv
-    - source .venv/bin/activate
     - uv sync
     - uv run python main.py
   rules:
