@@ -1,0 +1,50 @@
+stages:
+  - run
+
+# Global defaults to provision uv toolsets inside an execution runtime image context
+default:
+  image: python:3.13-slim
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
+    - curl -LsSf https://astral.sh/uv/install.sh | sh
+    - export PATH="$HOME/.local/bin:$PATH"
+    - uv --version
+
+# Cache mapping configuration across multiple pipeline iterations
+cache:
+  key:
+    files:
+      - uv.lock
+  paths:
+    - .cache/uv
+    - .venv
+
+run-pipeline:
+  stage: run
+  environment:
+    name: article_ingestion
+  variables:
+    # Tell uv to look inside the local project cache directory bounds
+    UV_CACHE_DIR: "$CI_PROJECT_DIR/.cache/uv"
+    # Ported configuration environments matching your operational engine variables
+    ENVIRONMENT: $VARS_ENVIRONMENT
+    STRICT_LLM_FAILURE: "true"
+    DATABASE_URL: $SECRET_DATABASE_URL
+    LLM_BASE_URL: $VARS_LLM_BASE_URL
+    LLM_API_KEY: $SECRET_LLM_API_KEY
+    LLM_MODEL: $VARS_LLM_MODEL
+  script:
+    - uv venv .venv
+    - source .venv/bin/activate
+    - uv sync
+    - uv run python main.py
+  rules:
+    # 1. Trigger manually via GitLab UI Run Pipeline buttons (workflow_dispatch)
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: always
+    # 2. Schedule execution patterns matching your specified 3-hour window
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: always
+    # 3. Code pushes committed straight into your production target branch
+    - if: '$CI_COMMIT_BRANCH == "production"'
+      when: always
