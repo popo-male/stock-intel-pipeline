@@ -1,9 +1,10 @@
-import torch
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from typing import Any, cast
 
-from src.db.connection import get_db_connection
+import torch
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
 from src.core.logger import logger
+from src.db.connection import get_db_connection
 
 
 class Analyzer:
@@ -27,12 +28,7 @@ class Analyzer:
             torch.nn.functional.softmax(outputs.logits, dim=-1).squeeze().tolist()
         )
 
-        pos_score, neg_score, neu_score = (
-            probabilities[0],
-            probabilities[1],
-            probabilities[2],
-        )
-        compound_score = pos_score - neg_score
+        compound_score = probabilities[0] - probabilities[1]  # Bullish - Bearish
 
         max_idx = probabilities.index(max(probabilities))
         label = self.labels[max_idx]
@@ -64,7 +60,9 @@ class Analyzer:
 
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute("SELECT id, title, summary FROM articles_v2 WHERE sentiment_score IS NULL")
+                cursor.execute(
+                    "SELECT id, title, summary FROM articles_v2 WHERE sentiment_score IS NULL"
+                )
                 unscored_articles = cursor.fetchall()
 
             if not unscored_articles:
@@ -77,8 +75,7 @@ class Analyzer:
             for article in unscored_articles:
                 row = cast(dict[str, Any], article)
                 sentiment = self.calculate_sentiment(
-                    title=row.get("title", ""),
-                    summary=row.get("summary", "")
+                    title=row.get("title", ""), summary=row.get("summary", "")
                 )
 
                 try:
@@ -94,7 +91,9 @@ class Analyzer:
                             )
                     update_count += 1
                 except Exception as exc:
-                    logger.error(f"Failed to commit metrics for record ID {row['id']}: {exc}")
+                    logger.error(
+                        f"Failed to commit metrics for record ID {row['id']}: {exc}"
+                    )
 
             logger.info(f"Successfully evaluated and saved {update_count} records.")
 
