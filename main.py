@@ -1,18 +1,16 @@
-from core.config import load_config
-from db.repository import setup_database
-from nlp.analyzer import Analyzer
-from nlp.llm_processor import LLMProcessor
-from scraper.fetcher import run_scraper
+from src.core.config import load_config
+from src.core.logger import logger
+from src.db.repository import setup_database
+from src.nlp.analyzer import Analyzer
+from src.nlp.llm_processor import LLMProcessor
+from src.scraper.fetcher import run_scraper
 
 
 def run() -> None:
     config = load_config()
-
-    # setup db
     setup_database()
 
-    print("Stock Intelligence Platform Initializing...")
-
+    logger.info("News Ingestion Pipeline Starting...")
     # ingest data
     run_scraper(config)
 
@@ -24,7 +22,7 @@ def run() -> None:
     llm_processor = LLMProcessor()
     llm_processor.process_unsummarized_articles()
 
-    print("Pipeline execution complete!")
+    logger.info("Pipeline execution complete!")
 
 
 if __name__ == "__main__":

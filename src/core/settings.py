@@ -4,11 +4,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     # DB
     DATABASE_URL: str | None = None
-    DB_HOST: str | None = None
-    DB_PORT: int | None = None
-    DB_NAME: str | None = None
-    DB_USER: str | None = None
-    DB_PASSWORD: str | None = None
 
     # LLM
     LLM_BASE_URL: str

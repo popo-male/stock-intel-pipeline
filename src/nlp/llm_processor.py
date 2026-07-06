@@ -4,9 +4,9 @@ from typing import Any, cast
 from pydantic import BaseModel, Field
 
 from openai import OpenAI
-from core.settings import settings
-from db.connection import get_db_connection
-from core.logger import logger
+from src.core.settings import settings
+from src.db.connection import get_db_connection
+from src.core.logger import logger
 
 
 class OutputSchema(BaseModel):
@@ -57,13 +57,12 @@ class LLMProcessor:
         Queries articles missing summaries using partial indexing.
         Updates JSONB structures using single-row runtime transactions.
         """
-        conn = get_db_connection()
         unsummarized = []
 
-        try:
+        with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
-                    "SELECT id, title, summary FROM articles WHERE bullets IS NULL"
+                    "SELECT id, title, summary FROM articles_v2 WHERE bullets IS NULL"
                 )
                 unsummarized = cursor.fetchall()
 
@@ -88,8 +87,8 @@ class LLMProcessor:
                             with conn.cursor() as update_cursor:
                                 update_cursor.execute(
                                     """
-                                    UPDATE articles 
-                                    SET bullets = %s, keywords = %s 
+                                    UPDATE articles_v2
+                                    SET bullets = %s, keywords = %s
                                     WHERE id = %s
                                     """,
                                     (
@@ -114,8 +113,6 @@ class LLMProcessor:
                 raise RuntimeError(
                     "Critical Error: LLM extraction engine failed completely across active processing targets."
                 )
-        finally:
-            conn.close()
 
 
 # Functional entry points matching original app architecture patterns

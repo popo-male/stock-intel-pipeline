@@ -1,16 +1,16 @@
+import uuid
 from typing import Any
 
-from db.connection import get_db_connection
+from src.db.connection import get_db_connection
 
 
 def setup_database() -> None:
-    conn = get_db_connection()
-    with conn:
+    with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS tickers (
-                    id SERIAL PRIMARY KEY,
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                     symbol TEXT NOT NULL UNIQUE,
                     name TEXT,
                     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
@@ -21,7 +21,7 @@ def setup_database() -> None:
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS articles_v2 (
-                    id SERIAL PRIMARY KEY,
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                     title TEXT NOT NULL,
                     url TEXT NOT NULL UNIQUE,
                     summary TEXT,
@@ -39,39 +39,37 @@ def setup_database() -> None:
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS article_tickers (
-                    article_id INT REFERENCES articles_v2(id) ON DELETE CASCADE,
-                    ticker_id INT REFERENCES tickers(id) ON DELETE CASCADE,
+                    article_id UUID REFERENCES articles_v2(id) ON DELETE CASCADE,
+                    ticker_id UUID REFERENCES tickers(id) ON DELETE CASCADE,
                     PRIMARY KEY (article_id, ticker_id)
                 );
                 """
             )
 
             cursor.execute(
-                "CREATE INDEX IF NOT EXISTS idx_articles_v2_published_at ON articles_v2 (published_at DESC);"
+                "CREATE INDEX IF NOT EXISTS idx_articles_published_at ON articles_v2 (published_at DESC);"
             )
             cursor.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_article_tickers_reverse ON article_tickers (ticker_id, article_id);"
             )
             cursor.execute(
-                "CREATE INDEX IF NOT EXISTS idx_articles_v2_unsc_jsonb ON articles_v2 (id) WHERE sentiment_score IS NULL;"
+                "CREATE INDEX IF NOT EXISTS idx_articles_unsc_jsonb ON articles_v2 (id) WHERE sentiment_score IS NULL;"
             )
             cursor.execute(
-                "CREATE INDEX IF NOT EXISTS idx_articles_v2_unsum_jsonb ON articles_v2 (id) WHERE bullets IS NULL;"
+                "CREATE INDEX IF NOT EXISTS idx_articles_unsum_jsonb ON articles_v2 (id) WHERE bullets IS NULL;"
             )
 
-    conn.close()
 
-
-def insert_ticker(cursor: Any, symbol: str) -> int:
-    """Insert a ticker into the database and return its ID."""
+def insert_ticker(cursor: Any, symbol: str, name: str | None = None) -> uuid.UUID:
+    """Insert a ticker (with optional display name) and return its ID."""
     cursor.execute(
         """
-        INSERT INTO tickers (symbol)
-        VALUES (%s)
-        ON CONFLICT (symbol) DO UPDATE SET symbol = EXCLUDED.symbol
+        INSERT INTO tickers (symbol, name)
+        VALUES (%s, %s)
+        ON CONFLICT (symbol) DO UPDATE SET name = COALESCE(EXCLUDED.name, tickers.name)
         RETURNING id;
         """,
-        (symbol,),
+        (symbol, name),
     )
     result = cursor.fetchone()
     if not result:
@@ -79,7 +77,7 @@ def insert_ticker(cursor: Any, symbol: str) -> int:
     return result["id"]
 
 
-def insert_article(cursor: Any, article: dict[str, Any]) -> int:
+def insert_article(cursor: Any, article: dict[str, Any]) -> uuid.UUID | None:
     """Insert an article into the database and return its ID."""
     cursor.execute(
         """
@@ -97,10 +95,10 @@ def insert_article(cursor: Any, article: dict[str, Any]) -> int:
         ),
     )
     result = cursor.fetchone()
-    return result["id"] if result else None  # type: ignore
+    return result["id"] if result else None
 
 
-def link_article_to_ticker(cursor: Any, article_id: int, ticker_id: int) -> None:
+def link_article_to_ticker(cursor: Any, article_id: uuid.UUID, ticker_id: uuid.UUID) -> bool:
     """Link an article to a ticker in the database."""
     cursor.execute(
         """

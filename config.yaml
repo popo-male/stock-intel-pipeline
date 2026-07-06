@@ -1,12 +1,25 @@
 scraper:
   watchlist:
-    - "MSFT"
-    - "AMD"
-    - "PLTR"
-    - "AAPL"
-    - "AMZN"
-    - "NVDA"
-    - "GOOGL"
-    - "TSLA"
+    - symbol: "MSFT"
+      name: "Microsoft Corporation"
+    - symbol: "AMD"
+      name: "Advanced Micro Devices, Inc."
+    - symbol: "PLTR"
+      name: "Palantir Technologies Inc."
+    - symbol: "AAPL"
+      name: "Apple Inc."
+    - symbol: "AMZN"
+      name: "Amazon.com, Inc."
+    - symbol: "NVDA"
+      name: "NVIDIA Corporation"
+    - symbol: "GOOGL"
+      name: "Alphabet Inc."
+    - symbol: "TSLA"
+      name: "Tesla, Inc."
   rss_base_url: "https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
   sleep_interval: 1
+
+logging:
+  level: "INFO"
+  name: "news_ingest_pipeline"
+  path: "log/out.log"
