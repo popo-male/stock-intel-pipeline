@@ -1,13 +1,18 @@
-import json
+"""
+LLM Processor for generating structured bullet summaries and keyword tags for news articles.
+"""
+
 import time
-from typing import Any, cast
 
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
 from src.core.logger import logger
 from src.core.settings import settings
-from src.db.connection import get_db_connection
+from src.crud.crud_news_articles import (
+    get_unsummarized_articles,
+    update_article_insights,
+)
 
 
 class OutputSchema(BaseModel):
@@ -22,16 +27,31 @@ class OutputSchema(BaseModel):
 
 
 class LLMProcessor:
+    """Processor extracting structured insights using LLM API."""
+
     def __init__(self, client: OpenAI | None = None):
-        self.client = client or OpenAI(
-            base_url=settings.LLM_BASE_URL,
-            api_key=settings.LLM_API_KEY,
-            timeout=30.0,
-            max_retries=5,
-        )
+        self._client = client
+
+    @property
+    def client(self) -> OpenAI | None:
+        if self._client is None and settings.LLM_API_KEY:
+            try:
+                self._client = OpenAI(
+                    base_url=settings.LLM_BASE_URL,
+                    api_key=settings.LLM_API_KEY,
+                    timeout=30.0,
+                    max_retries=3,
+                )
+            except Exception as e:
+                logger.error(f"Failed to initialize OpenAI client: {e}")
+        return self._client
 
     def generate_insights(self, title: str, summary: str) -> OutputSchema | None:
-        """Uses LLM to generate bullet points and extract keywords."""
+        """Uses LLM to generate structured bullet points and keywords."""
+        if not self.client or not settings.LLM_API_KEY:
+            logger.debug("LLM API key not configured. Skipping LLM insights generation.")
+            return None
+
         prompt = f"Analyze the following financial news article.\nTitle: {title}\nContent: {summary}"
         system_instruction = (
             "You are a financial analyst backend service. Extract key metadata details from the user prompt. "
@@ -61,65 +81,46 @@ class LLMProcessor:
             logger.error(f"Error generating insights using {settings.LLM_MODEL}: {exc}")
             return None
 
-    def process_unsummarized_articles(self) -> None:
+    def process_unsummarized_articles(self, limit: int = 50) -> int:
         """
-        Queries articles missing summaries using partial indexing.
-        Updates JSONB structures using single-row runtime transactions.
+        Queries articles missing summaries and updates bullets and keywords in news_articles.
         """
-        unsummarized = []
+        if not settings.LLM_API_KEY:
+            logger.info("LLM_API_KEY is not set. Skipping LLM article summarization.")
+            return 0
 
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "SELECT id, title, summary FROM articles_v2 WHERE bullets IS NULL"
-                )
-                unsummarized = cursor.fetchall()
+        unsummarized = get_unsummarized_articles(limit=limit)
+        if not unsummarized:
+            logger.info("No articles waiting for LLM summarization.")
+            return 0
 
-            if not unsummarized:
-                logger.info("No available records waiting for summary.")
-                return
+        logger.info(f"Generating LLM insights for {len(unsummarized)} articles...")
+        update_count = 0
 
-            logger.info(f"Generating insight for {len(unsummarized)} records...")
-            update_count = 0
+        for article in unsummarized:
+            insights = self.generate_insights(
+                title=article.get("title", ""), summary=article.get("summary", "")
+            )
+            if insights:
+                try:
+                    update_article_insights(
+                        article_id=article["id"],
+                        bullets=insights.bullets,
+                        keywords=insights.keywords,
+                    )
+                    update_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to update LLM insights for ID {article['id']}: {e}")
 
-            for article in unsummarized:
-                row = cast(dict[str, Any], article)
-                insights = self.generate_insights(
-                    row.get("title", ""), row.get("summary", "")
-                )
+            time.sleep(0.5)
 
-                if insights:
-                    try:
-                        with conn:
-                            with conn.cursor() as update_cursor:
-                                update_cursor.execute(
-                                    """
-                                    UPDATE articles_v2
-                                    SET bullets = %s, keywords = %s
-                                    WHERE id = %s
-                                    """,
-                                    (
-                                        json.dumps(insights.bullets),
-                                        json.dumps(insights.keywords),
-                                        row["id"],
-                                    ),
-                                )
-                        update_count += 1
-                    except Exception as exc:
-                        logger.error(
-                            f"Failed to commit metadata context updates on ID {row['id']}: {exc}"
-                        )
+        logger.info(f"Successfully processed LLM insights for {update_count} articles.")
 
-                time.sleep(1.5)
+        if settings.STRICT_LLM_FAILURE and unsummarized and update_count == 0:
+            raise RuntimeError("Strict mode: LLM insight extraction failed across all targets.")
 
-            logger.info(f"Successfully processed summaries for {update_count} records.")
-
-            if settings.STRICT_LLM_FAILURE and unsummarized and update_count == 0:
-                raise RuntimeError(
-                    "Critical Error: LLM extraction engine failed completely across active processing targets."
-                )
+        return update_count
 
 
-# Functional entry points matching original app architecture patterns
 def process_unsummarized_articles() -> None:
     LLMProcessor().process_unsummarized_articles()

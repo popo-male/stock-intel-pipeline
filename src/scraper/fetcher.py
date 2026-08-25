@@ -1,96 +1,122 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional
 
-from src.core.config import AppConfig
+from src.core.config import AppConfig, load_config
 from src.core.logger import logger
-from src.db.connection import get_db_connection
-from src.db.repository import insert_article, insert_ticker, link_article_to_ticker
+from src.crud.crud_news_articles import (
+    get_registered_tickers,
+    insert_article,
+    is_ticker_registered,
+    link_article_to_ticker,
+)
 from src.scraper.yahoo_rss import YahooRSSScraper
 
 
-def process_single_ticker(ticker_symbol: str, config: AppConfig) -> tuple[int, int]:
-    """Worker function executed in parallel threads to ingest news"""
-    ticker_new_articles = 0
-    ticker_new_links = 0
+class NewsFetcher:
+    """Orchestrator for scraping financial news and storing into raw news tables."""
 
-    scraper = YahooRSSScraper(config)
-    articles = scraper.fetch_news(ticker_symbol)
+    def __init__(self, config: AppConfig | None = None):
+        self.config = config or load_config()
 
-    if not articles:
-        return 0, 0
-
-    with get_db_connection() as conn:
-        try:
-            with conn.transaction():
-                with conn.cursor() as cursor:
-                    ticker_id = insert_ticker(cursor, ticker_symbol)
-
-                    for article_data in articles:
-                        article_id: Optional[str] = insert_article(cursor, article_data)
-                        is_brand_new = True
-
-                        if article_id is None:
-                            is_brand_new = False
-                            cursor.execute(
-                                "SELECT id FROM articles_v2 WHERE url = %s;",
-                                (article_data["url"],),
-                            )
-                            res = cursor.fetchone()
-                            article_id = str(res["id"]) if res else None
-
-                        if article_id:
-                            is_new_link = link_article_to_ticker(
-                                cursor, article_id, ticker_id
-                            )
-                            if is_new_link:
-                                ticker_new_links += 1
-                                if is_brand_new:
-                                    ticker_new_articles += 1
-
-            logger.info(
-                f"[{ticker_symbol}] Processed {len(articles)} articles. (New: {ticker_new_articles}, Links: {ticker_new_links})"
+    def process_single_ticker(
+        self,
+        ticker: str,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> tuple[int, int]:
+        """Fetches and inserts news articles for a single ticker."""
+        if not is_ticker_registered(ticker):
+            logger.warning(
+                f"[{ticker}] Ticker is not registered or active in 'tickers' table. Skipping news scraping."
             )
-        except Exception as exc:
-            logger.error(
-                f"Parallel database block crash for ticker {ticker_symbol}: {exc}",
-                exc_info=True,
-            )
+            return 0, 0
 
-    return ticker_new_articles, ticker_new_links
+        scraper = YahooRSSScraper(self.config)
+        articles = scraper.fetch_news(ticker, start_date=start_date, end_date=end_date)
 
+        if not articles:
+            return 0, 0
 
-def run_scraper(config: AppConfig) -> None:
-    total_new_articles = 0
-    total_new_links = 0
+        new_articles = 0
+        new_links = 0
 
-    logger.info("Starting news scraping phase...")
-
-    watchlist_symbols = []
-    for item in config.scraper.watchlist:
-        if isinstance(item, dict):
-            watchlist_symbols.append(item.get("symbol"))
-        elif hasattr(item, "symbol"):
-            watchlist_symbols.append(item.symbol)
-        else:
-            watchlist_symbols.append(str(item))
-
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        future_to_ticker = {
-            executor.submit(process_single_ticker, ticker, config): ticker
-            for ticker in watchlist_symbols
-        }
-
-        for future in as_completed(future_to_ticker):
-            ticker = future_to_ticker[future]
+        for article_data in articles:
             try:
-                new_articles, new_links = future.result()
-                total_new_articles += new_articles
-                total_new_links += new_links
-            except Exception as exc:
+                article_id = insert_article(article_data)
+                if article_id:
+                    is_linked = link_article_to_ticker(article_id, ticker)
+                    if is_linked:
+                        new_links += 1
+                    new_articles += 1
+            except Exception as e:
                 logger.error(
-                    f"Thread worker for ticker {ticker} generated an exception: {exc}"
+                    f"Error saving article '{article_data.get('title')}' for {ticker}: {e}"
                 )
 
-    logger.info(
-        f"Scraping phase complete. Ingested {total_new_articles} master documents, created {total_new_links} joins."
-    )
+        logger.info(
+            f"[{ticker}] Processed {len(articles)} articles (Saved: {new_articles}, Links: {new_links})"
+        )
+        return new_articles, new_links
+
+    def fetch_all(
+        self,
+        tickers: list[str] | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> tuple[int, int]:
+        """Runs parallel fetching across all target tickers."""
+        if tickers is None:
+            tickers = self.config.market.watchlist_symbols
+
+        registered = get_registered_tickers()
+        valid_tickers = [t for t in tickers if t in registered]
+        skipped_tickers = [t for t in tickers if t not in registered]
+
+        if skipped_tickers:
+            logger.warning(
+                f"Skipping unregistered tickers (not in 'tickers' table): {skipped_tickers}"
+            )
+
+        if not valid_tickers:
+            logger.warning("No registered tickers found to fetch news.")
+            return 0, 0
+
+        total_articles = 0
+        total_links = 0
+        max_workers = getattr(self.config.scraper, "max_workers", 4)
+
+        logger.info(
+            f"Starting news scraping for tickers: {valid_tickers} with {max_workers} threads..."
+        )
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_ticker = {
+                executor.submit(
+                    self.process_single_ticker, ticker, start_date, end_date
+                ): ticker
+                for ticker in valid_tickers
+            }
+
+            for future in as_completed(future_to_ticker):
+                ticker = future_to_ticker[future]
+                try:
+                    articles_cnt, links_cnt = future.result()
+                    total_articles += articles_cnt
+                    total_links += links_cnt
+                except Exception as exc:
+                    logger.error(
+                        f"Thread worker for ticker {ticker} generated exception: {exc}"
+                    )
+
+        logger.info(
+            f"News scraping completed: {total_articles} articles processed, {total_links} ticker links established."
+        )
+        return total_articles, total_links
+
+
+def run_scraper(
+    config: AppConfig | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> None:
+    fetcher = NewsFetcher(config)
+    fetcher.fetch_all(start_date=start_date, end_date=end_date)

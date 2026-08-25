@@ -1,7 +1,8 @@
 from bs4 import BeautifulSoup
 
+
 def clean_html(raw_html: str) -> str:
-    """Removes HTML tags from text."""
+    """Removes HTML tags and normalizes whitespace."""
     if not raw_html:
         return ""
     soup = BeautifulSoup(raw_html, "html.parser")

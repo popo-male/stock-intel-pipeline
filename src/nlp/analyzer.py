@@ -1,102 +1,115 @@
-from typing import Any, cast
+"""
+Sentiment Analysis Engine using FinBERT for financial text sentiment classification.
+"""
+
+from typing import Any
 
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
+from src.core.config import AppConfig, load_config
 from src.core.logger import logger
-from src.db.connection import get_db_connection
+from src.crud.crud_news_articles import get_unscored_articles, insert_sentiment
 
 
-class Analyzer:
-    def __init__(self, model_name: str = "ProsusAI/finbert"):
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
+class SentimentAnalyzer:
+    """FinBERT sentiment analyzer for financial news headlines and summaries."""
+
+    def __init__(self, config: AppConfig | None = None, model_name: str | None = None):
+        self.config = config or load_config()
+        self.model_name = model_name or self.config.nlp.sentiment_model
         self.labels = ["Bullish", "Bearish", "Neutral"]
+        self._tokenizer = None
+        self._model = None
+
+    def _load_model(self) -> None:
+        """Lazy load tokenizer and model."""
+        if self._model is None or self._tokenizer is None:
+            logger.info(f"Loading FinBERT model: {self.model_name}...")
+            self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+            self._model = AutoModelForSequenceClassification.from_pretrained(self.model_name)
+            self._model.eval()
 
     def analyze_text(self, text: str) -> dict[str, Any]:
-        if not text.strip():
+        """Analyzes a single text string and returns compound score and label."""
+        if not text or not text.strip():
             return {"score": 0.0, "label": "Neutral"}
 
-        inputs = self.tokenizer(
-            text, return_tensors="pt", padding=True, truncation=True, max_length=512
-        )
-        with torch.no_grad():
-            outputs = self.model(**inputs)
+        try:
+            self._load_model()
+            inputs = self._tokenizer(
+                text, return_tensors="pt", padding=True, truncation=True, max_length=512
+            )
+            with torch.no_grad():
+                outputs = self._model(**inputs)
 
-        # convert raw logits into probabilities using softmax
-        probabilities = (
-            torch.nn.functional.softmax(outputs.logits, dim=-1).squeeze().tolist()
-        )
+            probabilities = (
+                torch.nn.functional.softmax(outputs.logits, dim=-1).squeeze().tolist()
+            )
 
-        compound_score = probabilities[0] - probabilities[1]  # Bullish - Bearish
+            compound_score = probabilities[0] - probabilities[1]
+            max_idx = probabilities.index(max(probabilities))
+            label = self.labels[max_idx]
 
-        max_idx = probabilities.index(max(probabilities))
-        label = self.labels[max_idx]
-
-        return {"score": round(compound_score, 4), "label": label}
+            return {"score": round(compound_score, 4), "label": label}
+        except Exception as e:
+            logger.error(f"Error during FinBERT text analysis: {e}")
+            return {"score": 0.0, "label": "Neutral"}
 
     def calculate_sentiment(self, title: str, summary: str) -> dict[str, Any]:
         """
-        Calculates distinct sentiment profiles for title and summary.
-        Applies a 60% headline / 40% summary weighted distribution.
+        Calculates weighted sentiment score (60% headline, 40% summary).
         """
-        title_result = self.analyze_text(title)
-        summary_result = self.analyze_text(summary)
+        title_wt = self.config.nlp.title_weight
+        summary_wt = self.config.nlp.summary_weight
 
-        final_score = (title_result["score"] * 0.6) + (summary_result["score"] * 0.4)
+        title_res = self.analyze_text(title)
+        summary_res = self.analyze_text(summary)
 
-        if final_score >= 0.15:
+        final_score = (title_res["score"] * title_wt) + (summary_res["score"] * summary_wt)
+
+        if final_score >= self.config.nlp.bullish_threshold:
             final_label = "Bullish"
-        elif final_score <= -0.15:
+        elif final_score <= self.config.nlp.bearish_threshold:
             final_label = "Bearish"
         else:
             final_label = "Neutral"
 
         return {"score": round(final_score, 4), "label": final_label}
 
-    def process_unscored_articles(self) -> None:
-        """Fetches articles without sentiment scores and updates sentiment values."""
-        unscored_articles = []
+    def process_unscored_articles(self, limit: int = 200) -> int:
+        """Fetches unscored articles and saves calculated sentiments to news_sentiments table."""
+        unscored = get_unscored_articles(limit=limit)
+        if not unscored:
+            logger.info("No unscored news articles found in database queue.")
+            return 0
 
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "SELECT id, title, summary FROM articles_v2 WHERE sentiment_score IS NULL"
-                )
-                unscored_articles = cursor.fetchall()
+        logger.info(f"Analyzing sentiment for {len(unscored)} news records...")
+        processed_count = 0
 
-            if not unscored_articles:
-                logger.info("No unscored articles remaining in database queue.")
-                return
-
-            logger.info(f"Analyzing sentiment for {len(unscored_articles)} records...")
-            update_count = 0
-
-            for article in unscored_articles:
-                row = cast(dict[str, Any], article)
+        for row in unscored:
+            try:
                 sentiment = self.calculate_sentiment(
                     title=row.get("title", ""), summary=row.get("summary", "")
                 )
+                insert_sentiment(
+                    article_id=row["article_id"],
+                    ticker=row["ticker"],
+                    published_at=row["published_at"],
+                    sentiment_score=sentiment["score"],
+                    sentiment_label=sentiment["label"],
+                    model_version=self.model_name,
+                )
+                processed_count += 1
+            except Exception as e:
+                logger.error(f"Failed to calculate/save sentiment for article ID {row.get('article_id')}: {e}")
 
-                try:
-                    with conn:
-                        with conn.cursor() as update_cursor:
-                            update_cursor.execute(
-                                """
-                                UPDATE articles_v2
-                                SET sentiment_score = %s, sentiment_label = %s
-                                WHERE id = %s
-                                """,
-                                (sentiment["score"], sentiment["label"], row["id"]),
-                            )
-                    update_count += 1
-                except Exception as exc:
-                    logger.error(
-                        f"Failed to commit metrics for record ID {row['id']}: {exc}"
-                    )
+        logger.info(f"Successfully processed sentiment for {processed_count} articles.")
+        return processed_count
 
-            logger.info(f"Successfully evaluated and saved {update_count} records.")
+
+Analyzer = SentimentAnalyzer
 
 
 def process_unscored_articles() -> None:
-    Analyzer().process_unscored_articles()
+    SentimentAnalyzer().process_unscored_articles()

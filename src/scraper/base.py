@@ -4,12 +4,12 @@ from typing import Any
 from src.core.config import AppConfig
 
 
-class BaseScraper(ABC):
-    """Abstract Base Class specifying contracts for all downstream news engine ingestors."""
+class BaseNewsScraper(ABC):
+    """Abstract Base Class specifying contracts for all news engine scrapers."""
+
     def __init__(self, config: AppConfig):
         self.config = config
 
     @abstractmethod
     def fetch_news(self, ticker: str) -> list[dict[str, Any]]:
-        """Extract elements from source target and yield uniform platform dictionary shapes."""
-        pass
+        """Extract articles from source and yield standardized platform dictionary shapes."""

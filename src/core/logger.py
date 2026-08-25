@@ -6,29 +6,34 @@ from src.core.config import load_config
 
 
 def setup_logging():
-    config = load_config()
-    log_level = config.logging.level.upper()
-    log_file = config.logging.path
+    try:
+        config = load_config()
+        log_level = config.logging.level.upper()
+        log_file = config.logging.path
+    except Exception:
+        log_level = "INFO"
+        log_file = "log/out.log"
 
-    # Ensure the parent directory for logs exists to avoid file writing errors
+    # Ensure the parent directory for logs exists
     log_dir = Path(log_file).parent
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Standard Dictionary Configuration Mapping using pythonjsonlogger
     logging_config = {
         "version": 1,
         "disable_existing_loggers": False,
         "formatters": {
             "json": {
                 "()": "pythonjsonlogger.jsonlogger.JsonFormatter",
-                # The explicit fields to embed into your JSON output properties
                 "format": "%(asctime)s %(levelname)s %(name)s %(filename)s %(lineno)d %(message)s",
-            }
+            },
+            "standard": {
+                "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            },
         },
         "handlers": {
             "console": {
                 "class": "logging.StreamHandler",
-                "formatter": "json",
+                "formatter": "standard",
                 "level": log_level,
                 "stream": "ext://sys.stdout",
             },
@@ -37,7 +42,7 @@ def setup_logging():
                 "formatter": "json",
                 "level": log_level,
                 "filename": str(log_file),
-                "maxBytes": 10485760,  # 10MB file rotation safety threshold
+                "maxBytes": 10485760,  # 10MB
                 "backupCount": 5,
                 "encoding": "utf8",
             },
@@ -48,6 +53,5 @@ def setup_logging():
     logging.config.dictConfig(logging_config)
 
 
-# Initialize logging structure immediately upon module access
 setup_logging()
 logger = logging.getLogger("stock_platform")
