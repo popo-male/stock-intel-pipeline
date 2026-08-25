@@ -72,12 +72,12 @@ def upsert_daily_features(df: pd.DataFrame) -> int:
 
 def get_latest_feature_vector(ticker: str, target_date: str | date | None = None) -> dict[str, Any] | None:
     """
-    Retrieves the latest single feature row for inference on Day T.
+    Retrieves the latest feature row on or before target_date for inference.
     """
     query = "SELECT * FROM daily_stock_features WHERE ticker = %s"
     params: list[Any] = [ticker]
     if target_date:
-        query += " AND date = %s"
+        query += " AND date <= %s"
         params.append(target_date)
     query += " ORDER BY date DESC LIMIT 1"
 

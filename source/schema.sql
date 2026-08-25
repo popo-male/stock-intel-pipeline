@@ -174,7 +174,7 @@ CREATE INDEX IF NOT EXISTS idx_model_training_split ON model_training (split_typ
 -- 4. PREDICTION LAYER
 -- ==========================================
 
--- Short-Term Direction Predictions with Explainability & Confidence Scoring
+-- Short-Term Direction Predictions with Structured Signals & Confidence Scoring
 CREATE TABLE IF NOT EXISTS stock_predictions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     ticker VARCHAR(10) NOT NULL,
@@ -185,14 +185,11 @@ CREATE TABLE IF NOT EXISTS stock_predictions (
     probability_up DOUBLE PRECISION NOT NULL,
     probability_down DOUBLE PRECISION NOT NULL,
     probability_neutral DOUBLE PRECISION DEFAULT 0.0,
-    explanation TEXT,
-    feature_importance JSONB,
-    model_version VARCHAR(50) DEFAULT 'v1.0.0',
-    actual_direction VARCHAR(10),
-    is_correct BOOLEAN,
+    signal JSONB,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT uq_stock_predictions_ticker_date_ver UNIQUE (ticker, prediction_date, model_version)
+    CONSTRAINT uq_stock_predictions_ticker_date UNIQUE (ticker, prediction_date)
 );
 
 CREATE INDEX IF NOT EXISTS idx_stock_predictions_ticker_date ON stock_predictions (ticker, prediction_date DESC);
 CREATE INDEX IF NOT EXISTS idx_stock_predictions_date ON stock_predictions (prediction_date DESC);
+CREATE INDEX IF NOT EXISTS idx_stock_predictions_signal ON stock_predictions USING GIN (signal);

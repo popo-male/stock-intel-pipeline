@@ -39,8 +39,8 @@ if project_root not in sys.path:
 from src.core.config import load_config
 from src.core.database import close_db, init_db
 from src.core.logger import logger
-from src.features.generator import FeatureGenerator
-from src.inference.predictor import StockPredictor
+from src.features.generator import generate_features, generate_training_data
+from src.inference.predict import predict_single_stock, predict_watchlist
 from src.nlp.analyzer import SentimentAnalyzer
 from src.nlp.llm_processor import LLMProcessor
 from src.scraper.fetcher import NewsFetcher
@@ -165,10 +165,48 @@ def parse_arguments() -> argparse.Namespace:
         "--skip-llm", action="store_true", help="Skip LLM summary extraction"
     )
 
-    # 4. Command: training-data (alias generate-training-data)
+    # 4. Command: generate-features (alias: features)
+    feature_parser = subparsers.add_parser(
+        "generate-features",
+        aliases=["features"],
+        help="Execute feature engineering and store results in daily_stock_features table",
+    )
+    feature_parser.add_argument(
+        "--ticker",
+        "--tickers",
+        dest="ticker",
+        type=str,
+        default=None,
+        help="Ticker symbol(s)",
+    )
+    feature_parser.add_argument(
+        "--start",
+        "--start-date",
+        dest="start",
+        type=str,
+        default=None,
+        help="Start date (YYYYMMDD or YYYY-MM-DD)",
+    )
+    feature_parser.add_argument(
+        "--end",
+        "--end-date",
+        dest="end",
+        type=str,
+        default=None,
+        help="End date (YYYYMMDD or YYYY-MM-DD)",
+    )
+    feature_parser.add_argument(
+        "--date",
+        type=str,
+        default=None,
+        help="Single target date (YYYYMMDD or YYYY-MM-DD)",
+    )
+
+    # 5. Command: training-data (alias: generate-training-data)
     train_parser = subparsers.add_parser(
         "training-data",
-        help="Execute feature engineering and generate training dataset (DB & Parquet)",
+        aliases=["generate-training-data"],
+        help="Generate training dataset with target labels and train/val/test splits (DB & Parquet)",
     )
     train_parser.add_argument(
         "--output",
@@ -203,9 +241,10 @@ def parse_arguments() -> argparse.Namespace:
         help="End date (YYYYMMDD or YYYY-MM-DD)",
     )
 
-    # 5. Command: predict / run
+    # 6. Command: predict / run
     pred_parser = subparsers.add_parser(
         "predict",
+        aliases=["run"],
         help="Run short-term trend prediction (all tickers or specified ticker)",
     )
     pred_parser.add_argument(
@@ -217,24 +256,6 @@ def parse_arguments() -> argparse.Namespace:
         help="Target ticker symbol (e.g. AAPL)",
     )
     pred_parser.add_argument(
-        "--date",
-        type=str,
-        default=None,
-        help="Prediction target date (YYYYMMDD or YYYY-MM-DD)",
-    )
-
-    run_parser = subparsers.add_parser(
-        "run", help="Run prediction for specified ticker or all tickers"
-    )
-    run_parser.add_argument(
-        "--ticker",
-        "--tickers",
-        dest="ticker",
-        type=str,
-        default=None,
-        help="Target ticker symbol (e.g. AAPL)",
-    )
-    run_parser.add_argument(
         "--date",
         type=str,
         default=None,
@@ -294,20 +315,40 @@ def run_news_ingestion(args: argparse.Namespace) -> None:
         llm.process_unsummarized_articles()
 
 
-def run_feature_and_training_generation(args: argparse.Namespace) -> None:
-    logger.info("=== Running Feature Engineering & Training Data Generation ===")
+def run_feature_generation(args: argparse.Namespace) -> None:
+    logger.info("=== Running Feature Engineering ===")
+    config = load_config()
+    tickers = parse_tickers_arg(args.ticker)
+    start_date = normalize_date(getattr(args, "start", None))
+    end_date = normalize_date(getattr(args, "end", None))
+    single_date = normalize_date(getattr(args, "date", None))
+
+    if single_date:
+        start_date = single_date
+        end_date = single_date
+
+    generate_features(
+        tickers=tickers or config.market.watchlist_symbols,
+        start_date=start_date or config.training.start_date,
+        end_date=end_date or config.training.end_date,
+        config=config,
+    )
+
+
+def run_training_data_generation(args: argparse.Namespace) -> None:
+    logger.info("=== Running Training Dataset Generation ===")
     config = load_config()
     tickers = parse_tickers_arg(args.ticker)
     start_date = normalize_date(getattr(args, "start", None))
     end_date = normalize_date(getattr(args, "end", None))
     output_path = getattr(args, "output", None)
 
-    generator = FeatureGenerator(config)
-    generator.generate_and_save_dataset(
+    generate_training_data(
         tickers=tickers or config.market.watchlist_symbols,
         start_date=start_date or config.training.start_date,
         end_date=end_date or config.training.end_date,
         output_parquet=output_path or config.training.output_parquet,
+        config=config,
     )
 
 
@@ -316,34 +357,22 @@ def run_prediction_pipeline(args: argparse.Namespace) -> None:
     config = load_config()
     tickers = parse_tickers_arg(args.ticker)
     pred_date = normalize_date(getattr(args, "date", None))
-    predictor = StockPredictor(config)
 
     if tickers and len(tickers) == 1:
-        res = predictor.predict_ticker(tickers[0], target_date=pred_date)
-        print("\n" + "=" * 60)
-        print(f"PREDICTION RESULT: {res['ticker']} on {res['prediction_date']}")
-        print(
-            f"Predicted Direction : {res['target_direction']} (Class {res['predicted_class']})"
+        res = predict_single_stock(tickers[0], target_date=pred_date, config=config)
+        logger.info(
+            f"Stored prediction for {res['ticker']} on {res['prediction_date']}: "
+            f"Direction={res['target_direction']}, Confidence={res['confidence_score'] * 100:.1f}%, "
+            f"Probabilities=(UP:{res['probability_up']*100:.1f}%, DOWN:{res['probability_down']*100:.1f}%, NEUTRAL:{res['probability_neutral']*100:.1f}%)"
         )
-        print(f"Confidence Score    : {res['confidence_score'] * 100:.1f}%")
-        print(
-            f"Probabilities       : UP: {res['probability_up'] * 100:.1f}% | DOWN: {res['probability_down'] * 100:.1f}% | NEUTRAL: {res['probability_neutral'] * 100:.1f}%"
-        )
-        print(f"Explanation         : {res['explanation']}")
-        print("=" * 60 + "\n")
     else:
-        results = predictor.predict_all(tickers=tickers, target_date=pred_date)
-        print("\n" + "=" * 80)
-        print(
-            f"{'TICKER':<10} | {'DATE':<12} | {'DIRECTION':<10} | {'CONFIDENCE':<12} | {'UP / DOWN / NEUT':<20}"
+        results = predict_watchlist(
+            tickers=tickers, target_date=pred_date, config=config
         )
-        print("-" * 80)
-        for r in results:
-            probs = f"{r['probability_up'] * 100:.0f}% / {r['probability_down'] * 100:.0f}% / {r['probability_neutral'] * 100:.0f}%"
-            print(
-                f"{r['ticker']:<10} | {r['prediction_date']:<12} | {r['target_direction']:<10} | {r['confidence_score'] * 100:>10.1f}% | {probs:<20}"
-            )
-        print("=" * 80 + "\n")
+        total = len(tickers or config.market.watchlist_symbols)
+        logger.info(
+            f"Completed and stored predictions for {len(results)}/{total} tickers on {pred_date or 'latest available'}."
+        )
 
 
 def main() -> None:
@@ -352,18 +381,6 @@ def main() -> None:
 
     if not command:
         print("No command specified. Use --help to view available commands:")
-        print("  uv run src/main.py init-db")
-        print(
-            "  uv run src/main.py fetch-market [--ticker AAPL] [--start 20240101] [--end 20260101]"
-        )
-        print(
-            "  uv run src/main.py fetch-news [--ticker AAPL] [--start 20240101] [--end 20260101]"
-        )
-        print(
-            "  uv run src/main.py training-data [--output data/training_dataset.parquet]"
-        )
-        print("  uv run src/main.py predict")
-        print("  uv run src/main.py run --ticker AAPL")
         sys.exit(1)
 
     try:
@@ -375,9 +392,12 @@ def main() -> None:
         elif command in ("fetch-news"):
             init_db()
             run_news_ingestion(args)
-        elif command in ("training-data"):
+        elif command in ("generate-features", "features"):
             init_db()
-            run_feature_and_training_generation(args)
+            run_feature_generation(args)
+        elif command in ("training-data", "generate-training-data"):
+            init_db()
+            run_training_data_generation(args)
         elif command in ("predict", "run"):
             init_db()
             run_prediction_pipeline(args)
@@ -385,7 +405,8 @@ def main() -> None:
             init_db()
             run_market_ingestion(args)
             run_news_ingestion(args)
-            run_feature_and_training_generation(args)
+            run_feature_generation(args)
+            run_training_data_generation(args)
             run_prediction_pipeline(args)
             logger.info("=== Full Pipeline Execution Completed Successfully ===")
     except Exception as exc:

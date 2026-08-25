@@ -1,5 +1,5 @@
 """
-CRUD operations for stock_predictions table (functions only).
+CRUD operations for stock_predictions table (pure functions).
 """
 
 import json
@@ -19,24 +19,22 @@ def save_prediction(
     probability_up: float,
     probability_down: float,
     probability_neutral: float = 0.0,
-    explanation: str | None = None,
-    feature_importance: dict[str, Any] | None = None,
-    model_version: str = "v1.0.0",
+    signal: dict[str, Any] | None = None,
 ) -> uuid.UUID:
     """
-    Saves or updates a stock trend prediction in stock_predictions.
+    Saves or updates a stock trend prediction and its structured technical signals in stock_predictions.
     """
     query = """
     INSERT INTO stock_predictions (
         ticker, prediction_date, target_direction, predicted_class,
         confidence_score, probability_up, probability_down, probability_neutral,
-        explanation, feature_importance, model_version
+        signal
     ) VALUES (
         %(ticker)s, %(prediction_date)s, %(target_direction)s, %(predicted_class)s,
         %(confidence_score)s, %(probability_up)s, %(probability_down)s, %(probability_neutral)s,
-        %(explanation)s, %(feature_importance)s, %(model_version)s
+        %(signal)s
     )
-    ON CONFLICT (ticker, prediction_date, model_version)
+    ON CONFLICT (ticker, prediction_date)
     DO UPDATE SET
         target_direction = EXCLUDED.target_direction,
         predicted_class = EXCLUDED.predicted_class,
@@ -44,8 +42,7 @@ def save_prediction(
         probability_up = EXCLUDED.probability_up,
         probability_down = EXCLUDED.probability_down,
         probability_neutral = EXCLUDED.probability_neutral,
-        explanation = EXCLUDED.explanation,
-        feature_importance = EXCLUDED.feature_importance,
+        signal = EXCLUDED.signal,
         created_at = CURRENT_TIMESTAMP
     RETURNING id;
     """
@@ -58,9 +55,7 @@ def save_prediction(
         "probability_up": probability_up,
         "probability_down": probability_down,
         "probability_neutral": probability_neutral,
-        "explanation": explanation,
-        "feature_importance": json.dumps(feature_importance or {}),
-        "model_version": model_version,
+        "signal": json.dumps(signal or {}),
     }
 
     with get_db() as conn:
@@ -73,7 +68,7 @@ def save_prediction(
 def get_latest_predictions(
     prediction_date: str | date | None = None, limit: int = 20
 ) -> list[dict[str, Any]]:
-    """Retrieves recent stock predictions."""
+    """Retrieves recent stock predictions with structured signals."""
     query = "SELECT * FROM stock_predictions"
     params: list[Any] = []
     if prediction_date:
@@ -87,29 +82,3 @@ def get_latest_predictions(
             cursor.execute(query, params)
             return cursor.fetchall()
 
-
-def update_prediction_actual(
-    ticker: str,
-    prediction_date: str | date,
-    actual_direction: str,
-    is_correct: bool,
-    model_version: str = "v1.0.0",
-) -> None:
-    """Updates validation metrics on past prediction after market close."""
-    query = """
-    UPDATE stock_predictions
-    SET actual_direction = %s, is_correct = %s
-    WHERE ticker = %s AND prediction_date = %s AND model_version = %s;
-    """
-    with get_db() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                query,
-                (
-                    actual_direction,
-                    is_correct,
-                    ticker,
-                    prediction_date,
-                    model_version,
-                ),
-            )

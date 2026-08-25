@@ -12,7 +12,6 @@ from psycopg_pool import ConnectionPool
 
 from src.core.logger import logger
 from src.core.settings import settings
-from src.crud.crud_news_articles import sync_tickers
 
 _pool: ConnectionPool | None = None
 
@@ -86,6 +85,8 @@ def init_db(source_dir: Path | str | None = None) -> None:
     logger.info("Database schema initialized successfully from source/ .sql files!")
 
     # Synchronize tickers from config.yaml into tickers table
+    from src.crud.crud_news_articles import sync_tickers
+
     synced_count = sync_tickers()
     logger.info(
         f"Synchronized {synced_count} tickers from config.yaml into 'tickers' table."
