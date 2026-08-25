@@ -1,6 +1,6 @@
 # Stock Intelligence Platform - Ingestion & Prediction Pipeline
 
-A professional, data-driven platform that ingests daily stock market data and financial news, performs sentiment analysis and precision window aggregations, engineers technical & macro features, and generates explainable short-term stock trend predictions.
+A high-performance, data-driven platform that ingests daily stock market data and financial news, performs sentiment analysis and precision window aggregations, engineers scale-invariant technical & macro features, and generates explainable short-term stock trend predictions with rule-based signals.
 
 ---
 
@@ -15,9 +15,10 @@ A professional, data-driven platform that ingests daily stock market data and fi
   - [1. Database Initialization (`init-db`)](#1-database-initialization-init-db)
   - [2. Market Data Ingestion (`fetch-market`)](#2-market-data-ingestion-fetch-market)
   - [3. News & Sentiment Ingestion (`fetch-news`)](#3-news--sentiment-ingestion-fetch-news)
-  - [4. Training Dataset Generation (`training-data`)](#4-training-dataset-generation-training-data)
-  - [5. Trend Prediction (`predict` / `run`)](#5-trend-prediction-predict--run)
-  - [6. Full Pipeline Execution (`run-all`)](#6-full-pipeline-execution-run-all)
+  - [4. Feature Engineering (`generate-features`)](#4-feature-engineering-generate-features)
+  - [5. Training Dataset Generation (`training-data`)](#5-training-dataset-generation-training-data)
+  - [6. Trend Prediction (`predict` / `run`)](#6-trend-prediction-predict--run)
+  - [7. Full Pipeline Execution (`run-all`)](#7-full-pipeline-execution-run-all)
 - [Project Directory Structure](#-project-directory-structure)
 
 ---
@@ -26,17 +27,19 @@ A professional, data-driven platform that ingests daily stock market data and fi
 
 For in-depth mathematical formulations, workflows, and module-specific guides, refer to the dedicated documents in [`docs/`](docs/):
 
-1. 🗄️ [**Database Design & Schema Architecture**](docs/database_design.md) — 4-tier standardized database layers, table schemas, and function-only CRUD architecture.
-2. 📡 [**Data Collector Architecture**](docs/data_collector.md) — Yahoo Finance market prices and multi-threaded parallel RSS feed ingestion.
-3. 🧠 [**News Sentiment Analysis & LLM Insights**](docs/news_sentiment.md) — FinBERT compound scoring $[-1.0, 1.0]$ and Groq LLM executive summaries.
-4. ⚙️ [**Feature Engineering & Dataset Generation**](docs/feature_engineering.md) — Precision news window rules, TA indicators (MA, RSI, MACD), Left-Join architecture, and Parquet export.
-5. 🔮 [**Prediction Engine & Explainability**](docs/prediction.md) — Next-day trend inference, sigmoid probability calibration, and factor attribution.
+1. 🏛️ [**System Architecture & Pipeline Overview**](docs/architecture.md) — End-to-end data flow, execution sequence, and design principles.
+2. 🗄️ [**Database Design & Schema Architecture**](docs/database_design.md) — 4-tier standardized database layers, JSONB signals, and function-only CRUD architecture.
+3. 📡 [**Data Collector Architecture**](docs/data_collector.md) — Yahoo Finance market prices and multi-threaded parallel RSS feed ingestion.
+4. 🧠 [**News Sentiment Analysis & LLM Insights**](docs/news_sentiment.md) — FinBERT compound scoring $[-1.0, 1.0]$ and Groq LLM executive summaries.
+5. ⚙️ [**Feature Engineering & Scale-Invariance**](docs/feature_engineering.md) — Precision news window rules, TA indicators, scale-invariant relative spreads, and Left-Join store.
+6. 🎯 [**Training Dataset Pipeline**](docs/training_pipeline.md) — Target return labeling, chronological train/val/test partitions, and Parquet export.
+7. 🔮 [**Prediction Engine & Rule-Based Signals**](docs/prediction.md) — Next-day trend inference, probability calibration, and structured JSONB technical signals.
 
 ---
 
 ## 🏛️ Overview & Architecture
 
-The system combines structured daily price movements from Yahoo Finance and unstructured financial news articles into a unified feature matrix, training a classifier to predict whether a stock will move **UP** or **DOWN** on the next trading day.
+The system combines structured daily price movements from Yahoo Finance and unstructured financial news articles into a unified feature matrix, isolating pre-market information to predict whether a stock will move **UP** or **DOWN** on the next trading day.
 
 ```
                                   ┌─────────────────────────────────────────────────┐
@@ -47,7 +50,7 @@ The system combines structured daily price movements from Yahoo Finance and unst
                                                            ▼
 ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ 1. RAW DATA LAYER (source/schema.sql)                                                                            │
-│   • tickers          : Tracked assets (Magnificent 7 + Indices) with categorical encoding IDs                    │
+│   • tickers          : Tracked assets (Magnificent 7 + Indices) auto-seeded from config.yaml                     │
 │   • market_prices    : Raw daily OHLCV, adjusted close, volume, price change %, and market cap                   │
 │   • news_articles    : Raw scraped news articles, body text, and LLM bullet point highlights                     │
 │   • article_tickers  : Many-to-many link between news articles and tickers                                       │
@@ -56,25 +59,21 @@ The system combines structured daily price movements from Yahoo Finance and unst
                                            │
                                            ▼
 ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ 2. PROCESSED / FEATURE LAYER (source/schema.sql)                                                                 │
-│   • daily_stock_features : Market features (MA5/10/20, RSI-14, MACD, SPY/QQQ returns) joined with Precision      │
-│                            News Windows (T-1 4:00 PM EST to T 9:30 AM EST, weekend aggregation, 3-day rolling)   │
+│ 2. PROCESSED / FEATURE STORE LAYER (source/schema.sql)                                                           │
+│   • daily_stock_features : Technical indicators (MA, RSI, MACD), scale-invariant spreads, macro returns          │
+│                            joined with Precision News Windows (T-1 4:00 PM EST to T 9:30 AM EST, 3d rolling)     │
 └──────────────────────────────────────────┬───────────────────────────────────────────────────────────────────────┘
                                            │
-                                           ▼
-┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ 3. MODEL TRAINING LAYER (source/schema.sql)                                                                      │
-│   • model_training   : Master dataset joined with future direction target labels                                 │
-│                        (Binary UP/DOWN and Multi-Class UP/NEUTRAL/DOWN) with train/validation/test partitions    │
-│   • Parquet Export   : data/training_dataset.parquet                                                             │
-└──────────────────────────────────────────┬───────────────────────────────────────────────────────────────────────┘
-                                           │
-                                           ▼
-┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ 4. PREDICTION LAYER (source/schema.sql)                                                                          │
-│   • stock_predictions: Direction predictions (UP / DOWN / NEUTRAL), confidence scores, probabilities,            │
-│                        and human-readable explainability driver breakdowns                                       │
-└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                        ┌──────────────────┴──────────────────┐
+                        ▼                                     ▼
+┌──────────────────────────────────────────────┐    ┌──────────────────────────────────────────────┐
+│ 3. MODEL TRAINING LAYER                      │    │ 4. PREDICTION LAYER                          │
+│   • model_training   : Features + target     │    │   • stock_predictions: Direction (UP/DOWN),  │
+│                        labels & train/val/   │    │                        confidence %, probs,  │
+│                        test splits           │    │                        and JSONB signals     │
+│   • Parquet Export   : training_dataset.     │    │   • Real-time inference without lookahead    │
+│                        parquet               │    │     bias                                     │
+└──────────────────────────────────────────────┘    └──────────────────────────────────────────────┘
 ```
 
 ---
@@ -90,15 +89,15 @@ All SQL DDL definitions are centrally maintained in [`source/schema.sql`](source
 | **Raw Data** | `news_articles` | Raw headlines, body text summaries, and extracted LLM bullet points. |
 | **Raw Data** | `article_tickers` | Many-to-many relationship join linking articles to stocks. |
 | **Raw Data** | `news_sentiments` | FinBERT sentiment scores ($[-1.0, 1.0]$) and labels per article. |
-| **Processed** | `daily_stock_features` | Engineered indicators + precision window news sentiment aggregations. |
+| **Processed** | `daily_stock_features` | Engineered indicators + scale-invariant spreads + precision news window aggregations. |
 | **Training** | `model_training` | Master dataset joined with directional targets and train/val/test splits. |
-| **Prediction** | `stock_predictions` | Predicted direction, confidence %, probability distribution, and explanations. |
+| **Prediction** | `stock_predictions` | Predicted direction, confidence %, probability distribution, and structured JSONB signals. |
 
 ---
 
 ## 🐳 Quick Start with Local Database (Docker Compose)
 
-To test and run without touching production databases, launch the local PostgreSQL container:
+To test and run locally without touching production databases:
 
 ```bash
 # 1. Start local PostgreSQL 16 container
@@ -144,8 +143,8 @@ market:
       name: "Invesco QQQ Trust"
 
 training:
-  start_date: "2023-01-01"
-  end_date: "2025-12-31"
+  start_date: "2026-01-01"
+  end_date: "2026-08-25"
   output_parquet: "data/training_dataset.parquet"
 ```
 
@@ -153,13 +152,13 @@ training:
 
 ## 🚀 CLI Command Reference
 
-Execute commands using `uv run src/main.py <command>`. Both `YYYYMMDD` (e.g. `20240101`) and `YYYY-MM-DD` (e.g. `2024-01-01`) date formats are supported.
+Execute commands using `uv run src/main.py <command>`. Both `YYYYMMDD` (e.g. `20260101`) and `YYYY-MM-DD` (e.g. `2026-01-01`) date formats are supported.
 
 ### 1. Database Initialization (`init-db`)
 
-Initializes all database tables, constraints, and indexes from `source/*.sql`.
+Initializes all database tables, constraints, and indexes from `source/*.sql` and synchronizes tickers from `config.yaml`.
 
-> **Idempotent & Safe**: Running `init-db` multiple times will **not** raise errors, drop tables, or overwrite existing data.
+> **Idempotent & Safe**: Running `init-db` multiple times will **not** drop tables or overwrite existing market data.
 
 ```bash
 uv run src/main.py init-db
@@ -169,27 +168,24 @@ uv run src/main.py init-db
 
 ### 2. Market Data Ingestion (`fetch-market`)
 
-Extracts historical daily OHLCV prices from Yahoo Finance.
+Extracts historical daily OHLCV prices and volume from Yahoo Finance.
 
 ```bash
 # Fetch specific ticker across date range
-uv run src/main.py fetch-market --ticker AAPL --start 20240101 --end 20260101
+uv run src/main.py fetch-market --ticker AAPL --start 20260101 --end 20260825
 
 # Fetch all tickers in config.yaml across date range
-uv run src/main.py fetch-market --start 20240101 --end 20250101
+uv run src/main.py fetch-market --start 20260101 --end 20260825
 
-# Fetch all tickers in config.yaml using default config time range
+# Fetch all tickers using default config time range
 uv run src/main.py fetch-market
 
-# Fetch a single specific day (e.g. today or specific historical date)
-uv run src/main.py fetch-market --ticker AAPL --start 20260824 --end 20260824
+# Fetch a single specific day
+uv run src/main.py fetch-market --ticker AAPL --date 20260825
 
 # Fetch live intraday snapshot
 uv run src/main.py fetch-market --live
 ```
-
-> **Q: If I want to fetch the current day, do I run `--start 20260824 --end 20260824`?**  
-> **A:** **Yes.** When `--start` and `--end` are set to the same date, the pipeline extracts data specifically for that single day. If the market is currently active and you want the live intraday quote, use `--live`.
 
 ---
 
@@ -199,16 +195,13 @@ Scrapes Yahoo Finance RSS feeds, computes FinBERT sentiment scores, and extracts
 
 ```bash
 # Ingest news for specific ticker across date range
-uv run src/main.py fetch-news --ticker AAPL --start 20240101 --end 20260101
+uv run src/main.py fetch-news --ticker AAPL --start 20260101 --end 20260825
 
-# Ingest news for all tickers in config.yaml across date range
-uv run src/main.py fetch-news --start 20240101 --end 20250101
+# Ingest news for all tickers across date range
+uv run src/main.py fetch-news --start 20260101 --end 20260825
 
-# Ingest all latest RSS articles for all tickers in config.yaml
+# Ingest all latest RSS articles for all tickers
 uv run src/main.py fetch-news
-
-# Filter single day news (e.g. current day)
-uv run src/main.py fetch-news --start 20260824 --end 20260824
 
 # Skip LLM summary extraction (faster news + FinBERT scoring only)
 uv run src/main.py fetch-news --skip-llm
@@ -216,9 +209,23 @@ uv run src/main.py fetch-news --skip-llm
 
 ---
 
-### 4. Training Dataset Generation (`training-data`)
+### 4. Feature Engineering (`generate-features` / `features`)
 
-Executes technical feature calculation (MA5/10/20, RSI-14, MACD), precision news window aggregation, master Left Join, target labeling, validation, and Parquet export.
+Calculates scale-invariant technical indicators, benchmark returns, and overnight news sentiment aggregations, and saves directly into the `daily_stock_features` table.
+
+```bash
+# Generate daily feature store for all tickers
+uv run src/main.py generate-features --start 20260101 --end 20260825
+
+# Generate daily feature store for a single ticker
+uv run src/main.py generate-features --ticker AAPL --start 20260101 --end 20260825
+```
+
+---
+
+### 5. Training Dataset Generation (`training-data`)
+
+Computes directional future target labels (Day $T$ movement), assigns chronological train/validation/test splits, upserts to the `model_training` table, and exports the final Parquet file.
 
 ```bash
 # Generate training dataset using default output path (data/training_dataset.parquet)
@@ -228,43 +235,32 @@ uv run src/main.py training-data
 uv run src/main.py training-data --output data/custom_training_dataset.parquet
 
 # Generate for a custom date range
-uv run src/main.py training-data --start 20230101 --end 20251231
+uv run src/main.py training-data --start 20260101 --end 20260825
 ```
 
 ---
 
-### 5. Trend Prediction (`predict` / `run`)
+### 6. Trend Prediction (`predict` / `run`)
 
-Predicts next-day direction (**UP**, **DOWN**, or **NEUTRAL**) with calibrated confidence scores and human-readable explanations.
+Predicts next-day direction (**UP**, **DOWN**, or **NEUTRAL**), calibrated confidence scores, and rule-based technical signals (stored as `JSONB` in `stock_predictions`).
 
 ```bash
-# Predict for all tickers in config.yaml
+# Predict for all tickers in watchlist
 uv run src/main.py predict
 
 # Predict for a specific ticker
-uv run src/main.py run --ticker AAPL
+uv run src/main.py predict --ticker AAPL
 
-# Predict for a specific ticker on a specific target date
-uv run src/main.py run --ticker AAPL --date 20250115
-```
-
-**Sample Output**:
-```
-============================================================
-PREDICTION RESULT: AAPL on 2026-08-24
-Predicted Direction : UP (Class 1)
-Confidence Score    : 57.6%
-Probabilities       : UP: 57.6% | DOWN: 30.6% | NEUTRAL: 11.8%
-Explanation         : Prediction: UP (Confidence: 57.6%). Key driving factors for AAPL: RSI is neutral-to-moderately bearish at 50.0. MACD line (12.86) sits above signal line (5.76), confirming positive momentum.
-============================================================
+# Predict for a specific historical or target date
+uv run src/main.py predict --ticker AAPL --date 20260825
 ```
 
 ---
 
-### 6. Full Pipeline Execution (`run-all`)
+### 7. Full Pipeline Execution (`run-all`)
 
 Runs the end-to-end workflow sequentially:
-$\text{Market Ingestion} \rightarrow \text{News Ingestion} \rightarrow \text{NLP Scoring} \rightarrow \text{Feature Generation} \rightarrow \text{Model Prediction}$
+$\text{Market Ingestion} \rightarrow \text{News Ingestion} \rightarrow \text{Feature Engineering} \rightarrow \text{Training Dataset Generation} \rightarrow \text{Prediction}$
 
 ```bash
 uv run src/main.py run-all
@@ -280,13 +276,21 @@ article-ingestion-pipeline/
 ├── config.yaml                         # Central configuration (watchlist, encodings, thresholds)
 ├── pyproject.toml                      # Python dependencies
 ├── .env.example                        # Local test environment template
-├── README.md                           # Comprehensive documentation
+├── README.md                           # Master repository documentation
 ├── source/                             # Database DDL directory (.sql only)
 │   └── schema.sql                      # Standardized 4-tier SQL DDL definitions & indexes
+├── docs/                               # Detailed architectural and mathematical docs
+│   ├── architecture.md                 # System overview and execution flow
+│   ├── database_design.md              # 4-tier database schema & JSONB signal design
+│   ├── data_collector.md               # Market price & RSS news collectors
+│   ├── news_sentiment.md               # FinBERT scoring & LLM insights
+│   ├── feature_engineering.md          # Technical features, scale invariance & news windows
+│   ├── training_pipeline.md            # Target labeling, splits, and Parquet export
+│   └── prediction.md                   # Prediction engine & rule-based signals
 └── src/
-    ├── main.py                         # Primary CLI Entrypoint with rich arguments
+    ├── main.py                         # Primary CLI Entrypoint
     ├── core/
-    │   ├── config.py                   # YAML configuration loader (dynamic from config.yaml)
+    │   ├── config.py                   # YAML configuration loader
     │   ├── database.py                 # DB connection pool (get_db) & SQL init (init_db)
     │   ├── logger.py                   # Dual standard console & structured JSON file logging
     │   └── settings.py                 # Environment variables (.env)
@@ -306,10 +310,10 @@ article-ingestion-pipeline/
     │   ├── analyzer.py                 # FinBERT sentiment scoring (60% title / 40% summary)
     │   └── llm_processor.py            # LLM bullet points and keyword extractor
     ├── features/
-    │   ├── technical.py                # Technical indicators (MA, RSI, MACD)
-    │   ├── sentiment_agg.py            # Precision news window aggregator
-    │   └── generator.py                # Master Left-Join, target labeling, & Parquet export
+    │   ├── technical.py                # Pure technical indicators (MA, RSI, MACD)
+    │   ├── aggregation.py              # Pure precision news window aggregator
+    │   └── generator.py                # Pure functional feature engineering & training dataset generator
     └── inference/
-        ├── predictor.py                # Trend predictor & confidence scorer
-        └── explainability.py           # Factor attribution generator
+        └── predict.py                  # Pure functional trend prediction & rule-based signal generator
 ```
+
