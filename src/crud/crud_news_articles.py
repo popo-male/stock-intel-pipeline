@@ -157,7 +157,7 @@ def insert_sentiment(
     INSERT INTO news_sentiments (
         article_id, ticker, published_at, sentiment_score, sentiment_label, model_version
     ) VALUES (%s, %s, %s, %s, %s, %s)
-    ON CONFLICT (article_id, ticker)
+    ON CONFLICT (article_id, ticker, published_at)
     DO UPDATE SET
         sentiment_score = EXCLUDED.sentiment_score,
         sentiment_label = EXCLUDED.sentiment_label,
