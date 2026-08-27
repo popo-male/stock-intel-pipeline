@@ -34,21 +34,22 @@ class LLMProcessor:
 
     @property
     def client(self) -> OpenAI | None:
-        if self._client is None and settings.LLM_API_KEY:
+        api_key = settings.effective_llm_api_key
+        if self._client is None and api_key:
             try:
                 self._client = OpenAI(
                     base_url=settings.LLM_BASE_URL,
-                    api_key=settings.LLM_API_KEY,
+                    api_key=api_key,
                     timeout=30.0,
-                    max_retries=3,
+                    max_retries=2,
                 )
             except Exception as e:
-                logger.error(f"Failed to initialize OpenAI client: {e}")
+                logger.error(f"Failed to initialize OpenAI/Groq client: {e}")
         return self._client
 
     def generate_insights(self, title: str, summary: str) -> OutputSchema | None:
         """Uses LLM to generate structured bullet points and keywords."""
-        if not self.client or not settings.LLM_API_KEY:
+        if not self.client or not settings.effective_llm_api_key:
             logger.debug("LLM API key not configured. Skipping LLM insights generation.")
             return None
 
@@ -78,15 +79,23 @@ class LLMProcessor:
 
             return OutputSchema.model_validate_json(raw_content)
         except Exception as exc:
-            logger.error(f"Error generating insights using {settings.LLM_MODEL}: {exc}")
+            err_str = str(exc)
+            if "401" in err_str or "invalid_api_key" in err_str.lower() or "unauthorized" in err_str.lower():
+                logger.warning(
+                    f"LLM API Authentication failed (401 Unauthorized): {err_str}. "
+                    "Please verify your LLM_API_KEY / GROQ_API_KEY secret."
+                )
+                self._auth_failed = True
+            else:
+                logger.error(f"Error generating insights using {settings.LLM_MODEL}: {err_str}")
             return None
 
     def process_unsummarized_articles(self, limit: int = 50) -> int:
         """
         Queries articles missing summaries and updates bullets and keywords in news_articles.
         """
-        if not settings.LLM_API_KEY:
-            logger.info("LLM_API_KEY is not set. Skipping LLM article summarization.")
+        if not settings.effective_llm_api_key:
+            logger.info("LLM API key is not set. Skipping LLM article summarization.")
             return 0
 
         unsummarized = get_unsummarized_articles(limit=limit)
@@ -98,6 +107,10 @@ class LLMProcessor:
         update_count = 0
 
         for article in unsummarized:
+            if getattr(self, "_auth_failed", False):
+                logger.warning("Aborting remaining LLM summarization due to authentication failure.")
+                break
+
             insights = self.generate_insights(
                 title=article.get("title", ""), summary=article.get("summary", "")
             )

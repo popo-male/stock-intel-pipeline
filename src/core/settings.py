@@ -8,8 +8,13 @@ class Settings(BaseSettings):
     # LLM Settings
     LLM_BASE_URL: str = "https://api.groq.com/openai/v1"
     LLM_API_KEY: str = ""
-    LLM_MODEL: str = "openai/gpt-oss-120b"
+    GROQ_API_KEY: str = ""
+    LLM_MODEL: str = "llama-3.3-70b-versatile"
     STRICT_LLM_FAILURE: bool = False
+
+    @property
+    def effective_llm_api_key(self) -> str:
+        return self.LLM_API_KEY or self.GROQ_API_KEY or ""
 
     # Optional Watchlist Override
     WATCHLIST: str | None = None
