@@ -1,0 +1,57 @@
+name: Market Close Price & Features Pipeline
+
+on:
+  schedule:
+    # 5:30 AM MYT (UTC+8) = 21:30 UTC.
+    # Runs Mon-Fri UTC (Tue-Sat 5:30 AM MYT) to cover US market close:
+    # - Summer (EDT, UTC-4): Market closes at 4:00 PM EDT = 20:00 UTC (4:00 AM MYT)
+    # - Winter (EST, UTC-5): Market closes at 4:00 PM EST = 21:00 UTC (5:00 AM MYT)
+    # 21:30 UTC runs safely after both market closes.
+    - cron: "30 21 * * 1-5"
+  workflow_dispatch: # Allows manual trigger from GitHub Actions UI
+
+concurrency:
+  group: market-close-pipeline
+  cancel-in-progress: false
+
+jobs:
+  market-close-job:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Initialize Database Schema
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run src/main.py init-db
+
+      - name: Fetch Market Close Prices
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run src/main.py fetch-market
+
+      - name: Generate Daily Features
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run src/main.py generate-features
+
+      - name: Update Training Dataset
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run src/main.py training-data
+
+      - name: Run Next-Day Trend Predictions
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run src/main.py predict

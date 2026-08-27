@@ -1,0 +1,57 @@
+name: Hourly News & Prediction Pipeline
+
+on:
+  schedule:
+    # Runs every hour at minute 0 (24/7 news stream)
+    - cron: "0 * * * *"
+  workflow_dispatch: # Allows manual trigger from GitHub Actions UI
+
+concurrency:
+  group: hourly-pipeline
+  cancel-in-progress: false
+
+jobs:
+  hourly-job:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Initialize Database Schema
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run src/main.py init-db
+
+      - name: Fetch Latest News & Sentiment
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL || secrets.LLM_BASE_URL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_MODEL: ${{ vars.LLM_MODEL || secrets.LLM_MODEL }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: uv run src/main.py fetch-news
+
+      - name: Generate Daily Features
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run src/main.py generate-features
+
+      - name: Update Training Dataset
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run src/main.py training-data
+
+      - name: Refresh Predictions & Rule-Based Signals
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run src/main.py predict
