@@ -48,12 +48,12 @@ jobs:
       - name: Generate Daily Features
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: uv run src/main.py generate-features
+        run: uv run src/main.py generate-features --latest
 
       - name: Update Training Dataset
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: uv run src/main.py training-data
+        run: uv run src/main.py training-data --latest
 
       - name: Refresh Predictions & Rule-Based Signals
         env:

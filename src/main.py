@@ -201,6 +201,11 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help="Single target date (YYYYMMDD or YYYY-MM-DD)",
     )
+    feature_parser.add_argument(
+        "--latest",
+        action="store_true",
+        help="Generate features only for the latest recent trading days",
+    )
 
     # 5. Command: training-data (alias: generate-training-data)
     train_parser = subparsers.add_parser(
@@ -240,6 +245,11 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help="End date (YYYYMMDD or YYYY-MM-DD)",
     )
+    train_parser.add_argument(
+        "--latest",
+        action="store_true",
+        help="Generate training dataset only for the latest recent trading days",
+    )
 
     # 6. Command: predict / run
     pred_parser = subparsers.add_parser(
@@ -276,18 +286,20 @@ def run_market_ingestion(args: argparse.Namespace) -> None:
     end_date = normalize_date(args.end)
     single_date = normalize_date(args.date)
 
-    # If single_date is provided, use it for start and end
     if single_date:
         start_date = single_date
         end_date = single_date
+
+    # Default to live / current day price snapshot when no historical date range is specified
+    is_live = args.live or (not start_date and not end_date and not single_date)
 
     collector = MarketCollector(config)
     collector.collect(
         tickers=tickers,
         target_date=single_date,
-        start_date=start_date or (None if args.live else config.training.start_date),
-        end_date=end_date or (None if args.live else config.training.end_date),
-        live=args.live,
+        start_date=start_date,
+        end_date=end_date,
+        live=is_live,
     )
 
 
@@ -322,10 +334,15 @@ def run_feature_generation(args: argparse.Namespace) -> None:
     start_date = normalize_date(getattr(args, "start", None))
     end_date = normalize_date(getattr(args, "end", None))
     single_date = normalize_date(getattr(args, "date", None))
+    latest = getattr(args, "latest", False)
 
     if single_date:
         start_date = single_date
         end_date = single_date
+    elif latest:
+        from datetime import datetime, timedelta
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
 
     generate_features(
         tickers=tickers or config.market.watchlist_symbols,
@@ -342,6 +359,12 @@ def run_training_data_generation(args: argparse.Namespace) -> None:
     start_date = normalize_date(getattr(args, "start", None))
     end_date = normalize_date(getattr(args, "end", None))
     output_path = getattr(args, "output", None)
+    latest = getattr(args, "latest", False)
+
+    if latest:
+        from datetime import datetime, timedelta
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
 
     generate_training_data(
         tickers=tickers or config.market.watchlist_symbols,
