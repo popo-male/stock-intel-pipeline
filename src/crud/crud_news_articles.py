@@ -135,7 +135,7 @@ def get_unscored_articles(limit: int = 200) -> list[dict[str, Any]]:
     FROM news_articles na
     JOIN article_tickers at ON na.id = at.article_id
     LEFT JOIN news_sentiments ns ON na.id = ns.article_id AND at.ticker_symbol = ns.ticker
-    WHERE ns.id IS NULL
+    WHERE ns.article_id IS NULL
     ORDER BY na.published_at DESC
     LIMIT %s;
     """

@@ -89,11 +89,12 @@ CREATE INDEX IF NOT EXISTS idx_news_articles_unsummarized ON news_articles (id) 
 CREATE TABLE IF NOT EXISTS article_tickers (
     article_id UUID NOT NULL,
     ticker_id UUID,
-    ticker_symbol VARCHAR(10),
+    ticker_symbol VARCHAR(10) NOT NULL,
     PRIMARY KEY (article_id, ticker_symbol)
 );
 ALTER TABLE article_tickers ADD COLUMN IF NOT EXISTS ticker_symbol VARCHAR(10);
 ALTER TABLE article_tickers ADD COLUMN IF NOT EXISTS ticker_id UUID;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_article_tickers_art_symbol ON article_tickers (article_id, ticker_symbol);
 
 CREATE INDEX IF NOT EXISTS idx_article_tickers_symbol ON article_tickers (ticker_symbol);
 CREATE INDEX IF NOT EXISTS idx_article_tickers_article_id ON article_tickers (article_id);
