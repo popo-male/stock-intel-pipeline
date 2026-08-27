@@ -1,19 +1,25 @@
 -- ====================================================================
--- Stock Intelligence Platform - Database Schema with TimescaleDB
+-- Stock Intelligence Platform - Universal Database Schema
 -- ====================================================================
--- Extension: TimescaleDB enabled
+-- Supports: Local TimescaleDB Docker, Cloud Timescale, Neon DB & Standard PostgreSQL
 -- Chunk Time Interval: 1 Month (INTERVAL '1 month')
--- Compression Policy: 2 Months (INTERVAL '2 month')
--- Retention Policy: None (historical data stored indefinitely)
+-- Compression Policy: 2 Months (INTERVAL '2 month') [Active on TSL / TimescaleDB]
+-- Retention Policy: None (historical data preserved indefinitely)
 -- ====================================================================
 
-CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
+-- 1. Safely enable TimescaleDB extension if available
+DO $$
+BEGIN
+    CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'TimescaleDB extension not available or restricted on this host: %', SQLERRM;
+END $$;
 
 -- ==========================================
 -- 1. RAW DATA LAYER
 -- ==========================================
 
--- Tickers Registry (Standard PostgreSQL Table)
+-- Tickers Registry (Standard Table)
 CREATE TABLE IF NOT EXISTS tickers (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     symbol VARCHAR(10) NOT NULL UNIQUE,
@@ -21,8 +27,9 @@ CREATE TABLE IF NOT EXISTS tickers (
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
+ALTER TABLE tickers ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
 
--- Raw Market Prices (Timescale Hypertable)
+-- Raw Market Prices
 CREATE TABLE IF NOT EXISTS market_prices (
     ticker VARCHAR(10) NOT NULL,
     trade_date DATE NOT NULL,
@@ -41,19 +48,28 @@ CREATE TABLE IF NOT EXISTS market_prices (
 CREATE INDEX IF NOT EXISTS idx_market_prices_ticker_date ON market_prices (ticker, trade_date DESC);
 CREATE INDEX IF NOT EXISTS idx_market_prices_trade_date ON market_prices (trade_date DESC);
 
--- Convert to Hypertable (1 Month Chunks)
-SELECT create_hypertable('market_prices', 'trade_date', chunk_time_interval => INTERVAL '1 month', if_not_exists => TRUE);
+-- Timescale Hypertable & Compression for market_prices
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb') THEN
+        PERFORM create_hypertable('market_prices', 'trade_date', chunk_time_interval => INTERVAL '1 month', if_not_exists => TRUE);
+        BEGIN
+            ALTER TABLE market_prices SET (
+                timescaledb.compress,
+                timescaledb.compress_segmentby = 'ticker',
+                timescaledb.compress_orderby = 'trade_date DESC'
+            );
+            PERFORM add_compression_policy('market_prices', INTERVAL '2 month', if_not_exists => TRUE);
+        EXCEPTION WHEN OTHERS THEN
+            RAISE NOTICE 'Skipping market_prices compression (not supported under current license/host): %', SQLERRM;
+        END;
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'Skipping market_prices hypertable: %', SQLERRM;
+END $$;
 
--- Columnar Compression Policy (2 Months)
-ALTER TABLE market_prices SET (
-    timescaledb.compress,
-    timescaledb.compress_segmentby = 'ticker',
-    timescaledb.compress_orderby = 'trade_date DESC'
-);
-SELECT add_compression_policy('market_prices', INTERVAL '2 month', if_not_exists => TRUE);
 
-
--- Raw News Articles (Standard PostgreSQL Table for URL Deduplication)
+-- Raw News Articles (Standard Table for URL Deduplication)
 CREATE TABLE IF NOT EXISTS news_articles (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     title TEXT NOT NULL,
@@ -69,20 +85,22 @@ CREATE TABLE IF NOT EXISTS news_articles (
 CREATE INDEX IF NOT EXISTS idx_news_articles_published_at ON news_articles (published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_news_articles_unsummarized ON news_articles (id) WHERE bullets IS NULL;
 
--- Article <-> Ticker Join Table (Standard PostgreSQL Table)
+-- Article <-> Ticker Join Table
 CREATE TABLE IF NOT EXISTS article_tickers (
-    article_id UUID NOT NULL REFERENCES news_articles(id) ON DELETE CASCADE,
-    ticker_id UUID REFERENCES tickers(id) ON DELETE SET NULL,
-    ticker_symbol VARCHAR(10) NOT NULL,
+    article_id UUID NOT NULL,
+    ticker_id UUID,
+    ticker_symbol VARCHAR(10),
     PRIMARY KEY (article_id, ticker_symbol)
 );
+ALTER TABLE article_tickers ADD COLUMN IF NOT EXISTS ticker_symbol VARCHAR(10);
+ALTER TABLE article_tickers ADD COLUMN IF NOT EXISTS ticker_id UUID;
 
 CREATE INDEX IF NOT EXISTS idx_article_tickers_symbol ON article_tickers (ticker_symbol);
 CREATE INDEX IF NOT EXISTS idx_article_tickers_article_id ON article_tickers (article_id);
 
--- Article-Level Sentiment Results (Timescale Hypertable)
+-- Article-Level Sentiment Results
 CREATE TABLE IF NOT EXISTS news_sentiments (
-    article_id UUID NOT NULL REFERENCES news_articles(id) ON DELETE CASCADE,
+    article_id UUID NOT NULL,
     ticker VARCHAR(10) NOT NULL,
     published_at TIMESTAMPTZ NOT NULL,
     sentiment_score REAL NOT NULL,
@@ -94,23 +112,32 @@ CREATE TABLE IF NOT EXISTS news_sentiments (
 
 CREATE INDEX IF NOT EXISTS idx_news_sentiments_ticker_pub ON news_sentiments (ticker, published_at DESC);
 
--- Convert to Hypertable (1 Month Chunks)
-SELECT create_hypertable('news_sentiments', 'published_at', chunk_time_interval => INTERVAL '1 month', if_not_exists => TRUE);
-
--- Columnar Compression Policy (2 Months)
-ALTER TABLE news_sentiments SET (
-    timescaledb.compress,
-    timescaledb.compress_segmentby = 'ticker',
-    timescaledb.compress_orderby = 'published_at DESC'
-);
-SELECT add_compression_policy('news_sentiments', INTERVAL '2 month', if_not_exists => TRUE);
+-- Timescale Hypertable & Compression for news_sentiments
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb') THEN
+        PERFORM create_hypertable('news_sentiments', 'published_at', chunk_time_interval => INTERVAL '1 month', if_not_exists => TRUE);
+        BEGIN
+            ALTER TABLE news_sentiments SET (
+                timescaledb.compress,
+                timescaledb.compress_segmentby = 'ticker',
+                timescaledb.compress_orderby = 'published_at DESC'
+            );
+            PERFORM add_compression_policy('news_sentiments', INTERVAL '2 month', if_not_exists => TRUE);
+        EXCEPTION WHEN OTHERS THEN
+            RAISE NOTICE 'Skipping news_sentiments compression (not supported under current license/host): %', SQLERRM;
+        END;
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'Skipping news_sentiments hypertable: %', SQLERRM;
+END $$;
 
 
 -- ==========================================
 -- 2. PROCESSED / FEATURE LAYER
 -- ==========================================
 
--- Combined Daily Stock Features (Timescale Hypertable)
+-- Combined Daily Stock Features
 CREATE TABLE IF NOT EXISTS daily_stock_features (
     date DATE NOT NULL,
     ticker VARCHAR(10) NOT NULL,
@@ -155,23 +182,32 @@ CREATE TABLE IF NOT EXISTS daily_stock_features (
 CREATE INDEX IF NOT EXISTS idx_daily_stock_features_ticker_date ON daily_stock_features (ticker, date DESC);
 CREATE INDEX IF NOT EXISTS idx_daily_stock_features_date ON daily_stock_features (date DESC);
 
--- Convert to Hypertable (1 Month Chunks)
-SELECT create_hypertable('daily_stock_features', 'date', chunk_time_interval => INTERVAL '1 month', if_not_exists => TRUE);
-
--- Columnar Compression Policy (2 Months)
-ALTER TABLE daily_stock_features SET (
-    timescaledb.compress,
-    timescaledb.compress_segmentby = 'ticker',
-    timescaledb.compress_orderby = 'date DESC'
-);
-SELECT add_compression_policy('daily_stock_features', INTERVAL '2 month', if_not_exists => TRUE);
+-- Timescale Hypertable & Compression for daily_stock_features
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb') THEN
+        PERFORM create_hypertable('daily_stock_features', 'date', chunk_time_interval => INTERVAL '1 month', if_not_exists => TRUE);
+        BEGIN
+            ALTER TABLE daily_stock_features SET (
+                timescaledb.compress,
+                timescaledb.compress_segmentby = 'ticker',
+                timescaledb.compress_orderby = 'date DESC'
+            );
+            PERFORM add_compression_policy('daily_stock_features', INTERVAL '2 month', if_not_exists => TRUE);
+        EXCEPTION WHEN OTHERS THEN
+            RAISE NOTICE 'Skipping daily_stock_features compression (not supported under current license/host): %', SQLERRM;
+        END;
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'Skipping daily_stock_features hypertable: %', SQLERRM;
+END $$;
 
 
 -- ==========================================
 -- 3. MODEL TRAINING LAYER
 -- ==========================================
 
--- Model Training Dataset (Timescale Hypertable)
+-- Model Training Dataset
 CREATE TABLE IF NOT EXISTS model_training (
     date DATE NOT NULL,
     ticker VARCHAR(10) NOT NULL,
@@ -220,23 +256,32 @@ CREATE TABLE IF NOT EXISTS model_training (
 CREATE INDEX IF NOT EXISTS idx_model_training_ticker_date ON model_training (ticker, date DESC);
 CREATE INDEX IF NOT EXISTS idx_model_training_split ON model_training (split_type);
 
--- Convert to Hypertable (1 Month Chunks)
-SELECT create_hypertable('model_training', 'date', chunk_time_interval => INTERVAL '1 month', if_not_exists => TRUE);
-
--- Columnar Compression Policy (2 Months)
-ALTER TABLE model_training SET (
-    timescaledb.compress,
-    timescaledb.compress_segmentby = 'ticker',
-    timescaledb.compress_orderby = 'date DESC'
-);
-SELECT add_compression_policy('model_training', INTERVAL '2 month', if_not_exists => TRUE);
+-- Timescale Hypertable & Compression for model_training
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb') THEN
+        PERFORM create_hypertable('model_training', 'date', chunk_time_interval => INTERVAL '1 month', if_not_exists => TRUE);
+        BEGIN
+            ALTER TABLE model_training SET (
+                timescaledb.compress,
+                timescaledb.compress_segmentby = 'ticker',
+                timescaledb.compress_orderby = 'date DESC'
+            );
+            PERFORM add_compression_policy('model_training', INTERVAL '2 month', if_not_exists => TRUE);
+        EXCEPTION WHEN OTHERS THEN
+            RAISE NOTICE 'Skipping model_training compression (not supported under current license/host): %', SQLERRM;
+        END;
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'Skipping model_training hypertable: %', SQLERRM;
+END $$;
 
 
 -- ==========================================
 -- 4. PREDICTION LAYER
 -- ==========================================
 
--- Short-Term Direction Predictions with Structured Signals (Timescale Hypertable)
+-- Short-Term Direction Predictions with Structured Signals
 CREATE TABLE IF NOT EXISTS stock_predictions (
     id UUID DEFAULT gen_random_uuid(),
     ticker VARCHAR(10) NOT NULL,
@@ -256,13 +301,22 @@ CREATE INDEX IF NOT EXISTS idx_stock_predictions_ticker_date ON stock_prediction
 CREATE INDEX IF NOT EXISTS idx_stock_predictions_date ON stock_predictions (prediction_date DESC);
 CREATE INDEX IF NOT EXISTS idx_stock_predictions_signal ON stock_predictions USING GIN (signal);
 
--- Convert to Hypertable (1 Month Chunks)
-SELECT create_hypertable('stock_predictions', 'prediction_date', chunk_time_interval => INTERVAL '1 month', if_not_exists => TRUE);
-
--- Columnar Compression Policy (2 Months)
-ALTER TABLE stock_predictions SET (
-    timescaledb.compress,
-    timescaledb.compress_segmentby = 'ticker',
-    timescaledb.compress_orderby = 'prediction_date DESC'
-);
-SELECT add_compression_policy('stock_predictions', INTERVAL '2 month', if_not_exists => TRUE);
+-- Timescale Hypertable & Compression for stock_predictions
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb') THEN
+        PERFORM create_hypertable('stock_predictions', 'prediction_date', chunk_time_interval => INTERVAL '1 month', if_not_exists => TRUE);
+        BEGIN
+            ALTER TABLE stock_predictions SET (
+                timescaledb.compress,
+                timescaledb.compress_segmentby = 'ticker',
+                timescaledb.compress_orderby = 'prediction_date DESC'
+            );
+            PERFORM add_compression_policy('stock_predictions', INTERVAL '2 month', if_not_exists => TRUE);
+        EXCEPTION WHEN OTHERS THEN
+            RAISE NOTICE 'Skipping stock_predictions compression (not supported under current license/host): %', SQLERRM;
+        END;
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'Skipping stock_predictions hypertable: %', SQLERRM;
+END $$;
