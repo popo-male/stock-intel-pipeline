@@ -111,7 +111,6 @@ CREATE TABLE IF NOT EXISTS news_sentiments (
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (article_id, ticker, published_at)
 );
-ALTER TABLE news_sentiments ADD COLUMN IF NOT EXISTS id UUID DEFAULT gen_random_uuid();
 
 CREATE INDEX IF NOT EXISTS idx_news_sentiments_ticker_pub ON news_sentiments (ticker, published_at DESC);
 
