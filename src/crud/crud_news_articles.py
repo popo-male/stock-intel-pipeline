@@ -182,7 +182,7 @@ def get_unsummarized_articles(limit: int = 50) -> list[dict[str, Any]]:
     query = """
     SELECT id, title, summary
     FROM news_articles
-    WHERE bullets IS NULL
+    WHERE bullets IS NULL OR keywords IS NULL
     ORDER BY published_at DESC
     LIMIT %s;
     """

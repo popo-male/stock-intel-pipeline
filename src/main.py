@@ -164,6 +164,12 @@ def parse_arguments() -> argparse.Namespace:
     news_parser.add_argument(
         "--skip-llm", action="store_true", help="Skip LLM summary extraction"
     )
+    news_parser.add_argument(
+        "--llm-limit",
+        type=int,
+        default=100,
+        help="Max unsummarized articles to process with LLM (default: 100)",
+    )
 
     # 4. Command: generate-features (alias: features)
     feature_parser = subparsers.add_parser(
@@ -324,7 +330,8 @@ def run_news_ingestion(args: argparse.Namespace) -> None:
     if not getattr(args, "skip_llm", False):
         logger.info("Executing LLM insights extraction...")
         llm = LLMProcessor()
-        llm.process_unsummarized_articles()
+        limit = getattr(args, "llm_limit", 100) or 100
+        llm.process_unsummarized_articles(limit=limit)
 
 
 def run_feature_generation(args: argparse.Namespace) -> None:
