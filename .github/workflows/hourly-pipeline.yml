@@ -10,10 +10,14 @@ concurrency:
   group: hourly-pipeline
   cancel-in-progress: false
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   hourly-job:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    environment: pipeline
 
     steps:
       - name: Checkout repository
