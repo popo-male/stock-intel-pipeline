@@ -67,6 +67,11 @@ training:
 
 model:
   version: "v1.0.0"
+  model_path: "models/model_bundle.joblib"
+  fallback_model_path: "models/xgb_model.json"
+  metadata_path: "models/metadata.json"
+  decision_threshold: 0.4
+  use_ml_model: true
 
 logging:
   level: "INFO"

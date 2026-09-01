@@ -90,6 +90,11 @@ class TrainingConfig(BaseModel):
 
 class ModelConfig(BaseModel):
     version: str = Field(default="v1.0.0")
+    model_path: str = Field(default="models/model_bundle.joblib")
+    fallback_model_path: str = Field(default="models/xgb_model.json")
+    metadata_path: str = Field(default="models/metadata.json")
+    decision_threshold: float = Field(default=0.4)
+    use_ml_model: bool = Field(default=True)
 
 
 class LoggingConfig(BaseModel):

@@ -1,55 +1,32 @@
 """
 Stock Direction Prediction & Explainability Service.
-Provides functional prediction pipelines and rule-based explanations.
+Provides functional prediction orchestration and rule-based explanations.
 """
 
 from datetime import date, datetime
 from typing import Any
 
-import numpy as np
-
 from src.core.config import AppConfig, load_config
 from src.core.logger import logger
 from src.crud.crud_daily_stock_features import get_latest_feature_vector
 from src.crud.crud_stock_predictions import save_prediction
+from src.inference.model import StockDirectionModel, get_model
 
 
-def predict_direction(features: dict[str, Any]) -> tuple[float, float, float]:
+def predict_direction(
+    features: dict[str, Any], config: AppConfig | None = None
+) -> tuple[float, float, float]:
     """
-    Computes heuristic probabilities from normalized technical and sentiment signals.
-    NOTE: Replace or route this to `model.predict_proba(X)` once ML models are trained.
+    Computes probabilities using the global StockDirectionModel instance.
+    Returns: (probability_up, probability_down, probability_neutral)
     """
-    rsi = float(features.get("rsi") or 50.0)
-    macd = float(features.get("macd") or 0.0)
-    macd_sig = float(features.get("macd_signal") or 0.0)
-    daily_return = float(features.get("daily_return") or 0.0)
-    spy_return = float(features.get("spy_return") or 0.0)
-    avg_sent = float(features.get("avg_sentiment") or 0.0)
-    sent_3d = float(features.get("avg_sentiment_3d") or 0.0)
-
-    # Normalize technical and sentiment indicators to [-1, 1]
-    rsi_signal = np.clip((rsi - 50.0) / 20.0, -1.0, 1.0)
-    macd_signal = np.tanh((macd - macd_sig) * 2.0)
-    ret_signal = np.tanh(daily_return * 10.0)
-    spy_signal = np.tanh(spy_return * 15.0)
-    intraday_sent = np.clip(avg_sent, -1.0, 1.0)
-    macro_sent = np.clip(sent_3d, -1.0, 1.0)
-
-    tech_score = (
-        (rsi_signal * 0.3)
-        + (macd_signal * 0.4)
-        + (ret_signal * 0.15)
-        + (spy_signal * 0.15)
+    model = get_model(config)
+    res = model.predict(features)
+    return (
+        res["probability_up"],
+        res["probability_down"],
+        res["probability_neutral"],
     )
-    sent_score = (intraday_sent * 0.7) + (macro_sent * 0.3)
-    composite = (tech_score * 0.55) + (sent_score * 0.45)
-
-    prob_up = float(1.0 / (1.0 + np.exp(-3.0 * composite)))
-    prob_neutral = float(max(0.0, 1.0 - (abs(composite) * 2.5)) * 0.25)
-    prob_down = (1.0 - prob_up) * (1.0 - prob_neutral)
-    prob_up *= 1.0 - prob_neutral
-
-    return round(prob_up, 4), round(prob_down, 4), round(prob_neutral, 4)
 
 
 def get_signal(features: dict[str, Any]) -> dict[str, Any]:
@@ -77,13 +54,33 @@ def get_signal(features: dict[str, Any]) -> dict[str, Any]:
 
     # 1. RSI Rule
     if rsi >= 70.0:
-        rsi_info = {"value": round(rsi, 2), "rule": "rsi >= 70", "signal": "Overbought", "sentiment": "Bearish"}
+        rsi_info = {
+            "value": round(rsi, 2),
+            "rule": "rsi >= 70",
+            "signal": "Overbought",
+            "sentiment": "Bearish",
+        }
     elif rsi <= 30.0:
-        rsi_info = {"value": round(rsi, 2), "rule": "rsi <= 30", "signal": "Oversold", "sentiment": "Bullish"}
+        rsi_info = {
+            "value": round(rsi, 2),
+            "rule": "rsi <= 30",
+            "signal": "Oversold",
+            "sentiment": "Bullish",
+        }
     elif rsi > 50.0:
-        rsi_info = {"value": round(rsi, 2), "rule": "50 < rsi < 70", "signal": "Bullish Momentum", "sentiment": "Bullish"}
+        rsi_info = {
+            "value": round(rsi, 2),
+            "rule": "50 < rsi < 70",
+            "signal": "Bullish Momentum",
+            "sentiment": "Bullish",
+        }
     else:
-        rsi_info = {"value": round(rsi, 2), "rule": "30 < rsi <= 50", "signal": "Bearish Momentum", "sentiment": "Bearish"}
+        rsi_info = {
+            "value": round(rsi, 2),
+            "rule": "30 < rsi <= 50",
+            "signal": "Bearish Momentum",
+            "sentiment": "Bearish",
+        }
 
     # 2. MACD Rule
     macd_diff = macd - macd_signal
@@ -108,7 +105,9 @@ def get_signal(features: dict[str, Any]) -> dict[str, Any]:
 
     # 3. Moving Average Trend Rule
     if ma5 > 0 and ma20 > 0:
-        ma_signal = "Bullish (MA5 > MA20)" if ma5 > ma20 else "Bearish (MA5 < MA20)"
+        ma_signal = (
+            "Bullish (MA5 > MA20)" if ma5 > ma20 else "Bearish (MA5 < MA20)"
+        )
         ma_info = {
             "ma5": round(ma5, 2),
             "ma10": round(ma10, 2),
@@ -120,7 +119,12 @@ def get_signal(features: dict[str, Any]) -> dict[str, Any]:
             "sentiment": "Bullish" if ma5 > ma20 else "Bearish",
         }
     else:
-        ma_info = {"ma5": round(ma5, 2), "ma20": round(ma20, 2), "signal": "Insufficient History", "sentiment": "Neutral"}
+        ma_info = {
+            "ma5": round(ma5, 2),
+            "ma20": round(ma20, 2),
+            "signal": "Insufficient History",
+            "sentiment": "Neutral",
+        }
 
     # 4. Market / Macro Beta Rule
     if spy_return > 0.2:
@@ -173,7 +177,9 @@ def get_signal(features: dict[str, Any]) -> dict[str, Any]:
     # 6. Volatility Spread
     volatility_info = {
         "high_low_spread_pct": round(high_low_spread * 100.0, 2),
-        "signal": "Elevated Volatility" if high_low_spread > 0.03 else "Normal Volatility",
+        "signal": "Elevated Volatility"
+        if high_low_spread > 0.03
+        else "Normal Volatility",
     }
 
     return {
@@ -190,6 +196,7 @@ def predict_single_stock(
     ticker: str,
     target_date: str | date | None = None,
     config: AppConfig | None = None,
+    model: StockDirectionModel | None = None,
 ) -> dict[str, Any]:
     """Runs end-to-end direction prediction, structured signal extraction, and DB persistence for one ticker."""
     cfg = config or load_config()
@@ -202,33 +209,23 @@ def predict_single_stock(
             f"Please run market collection and feature engineering first."
         )
 
-    prob_up, prob_down, prob_neutral = predict_direction(features)
+    # 1. Execute ML/Heuristic model inference via StockDirectionModel
+    model_engine = model or get_model(cfg)
+    pred_res = model_engine.predict(features)
 
-    # Class resolution
-    if prob_up >= prob_down and prob_up >= prob_neutral:
-        direction = cfg.target_definitions.direction_up
-        predicted_class = cfg.target_definitions.up_code
-        confidence = prob_up
-    elif prob_down >= prob_up and prob_down >= prob_neutral:
-        direction = cfg.target_definitions.direction_down
-        predicted_class = cfg.target_definitions.down_code
-        confidence = prob_down
-    else:
-        direction = cfg.target_definitions.direction_neutral
-        predicted_class = getattr(cfg.target_definitions, "neutral_code", -1)
-        confidence = prob_neutral
-
+    # 2. Extract structured technical and sentiment explainability signals
     signals = get_signal(features=features)
 
+    # 3. Persist prediction to database
     pred_id = save_prediction(
         ticker=ticker,
         prediction_date=pred_date,
-        target_direction=direction,
-        predicted_class=predicted_class,
-        confidence_score=confidence,
-        probability_up=prob_up,
-        probability_down=prob_down,
-        probability_neutral=prob_neutral,
+        target_direction=pred_res["target_direction"],
+        predicted_class=pred_res["predicted_class"],
+        confidence_score=pred_res["confidence_score"],
+        probability_up=pred_res["probability_up"],
+        probability_down=pred_res["probability_down"],
+        probability_neutral=pred_res["probability_neutral"],
         signal=signals,
     )
 
@@ -236,12 +233,12 @@ def predict_single_stock(
         "id": str(pred_id),
         "ticker": ticker,
         "prediction_date": pred_date,
-        "target_direction": direction,
-        "predicted_class": predicted_class,
-        "confidence_score": confidence,
-        "probability_up": prob_up,
-        "probability_down": prob_down,
-        "probability_neutral": prob_neutral,
+        "target_direction": pred_res["target_direction"],
+        "predicted_class": pred_res["predicted_class"],
+        "confidence_score": pred_res["confidence_score"],
+        "probability_up": pred_res["probability_up"],
+        "probability_down": pred_res["probability_down"],
+        "probability_neutral": pred_res["probability_neutral"],
         "signal": signals,
     }
 
@@ -257,9 +254,13 @@ def predict_watchlist(
     pred_date = str(target_date or datetime.now().date())
     predictions: list[dict[str, Any]] = []
 
+    model_engine = get_model(cfg)
+
     for ticker in watchlist:
         try:
-            res = predict_single_stock(ticker, target_date=pred_date, config=cfg)
+            res = predict_single_stock(
+                ticker, target_date=pred_date, config=cfg, model=model_engine
+            )
             predictions.append(res)
         except Exception as e:
             logger.error(f"[{ticker}] Prediction failed: {e}")
