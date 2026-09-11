@@ -21,10 +21,15 @@ class MarketCollector:
     def __init__(self, config: AppConfig | None = None):
         self.config = config or load_config()
         self.tz = pytz.timezone(getattr(self.config, "timezone", "Asia/Kuala_Lumpur"))
+        self.market_tz = pytz.timezone("America/New_York")
 
     def _get_current_time(self) -> datetime:
         """Returns current datetime localized to configured timezone (Malaysia Time)."""
         return datetime.now(self.tz)
+
+    def _get_market_time(self) -> datetime:
+        """Returns current datetime localized to US/Eastern timezone (NYSE/NASDAQ exchange time)."""
+        return datetime.now(self.market_tz)
 
     def fetch_live_ticker(self, ticker_symbol: str) -> dict[str, Any]:
         """Fetches latest intraday/current price data for a ticker."""
@@ -39,7 +44,8 @@ class MarketCollector:
             price_change_pct = ((current_price - open_price) / open_price) * 100
 
         now = self._get_current_time()
-        trade_date = now.strftime("%Y-%m-%d")
+        market_now = self._get_market_time()
+        trade_date = market_now.strftime("%Y-%m-%d")
 
         return {
             "ticker": ticker_symbol,

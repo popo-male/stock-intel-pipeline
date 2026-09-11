@@ -83,8 +83,13 @@ def compute_benchmark_returns(
 ) -> dict[str, pd.DataFrame]:
     """Calculates daily returns for benchmark ETFs (e.g. SPY, QQQ) lagged by 1 day."""
     benchmarks: dict[str, pd.DataFrame] = {}
+    history_start = (
+        (pd.to_datetime(start_date) - pd.Timedelta(days=30)).strftime("%Y-%m-%d")
+        if start_date
+        else None
+    )
     for symbol in index_symbols:
-        df = get_market_prices_df(symbol, start_date=start_date, end_date=end_date)
+        df = get_market_prices_df(symbol, start_date=history_start, end_date=end_date)
         if df.empty:
             logger.warning(f"No market data found for benchmark {symbol}")
             continue
@@ -137,8 +142,13 @@ def compute_ticker_features(
 ) -> pd.DataFrame:
     """Generates feature matrix for a single ticker."""
     logger.info(f"Generating feature matrix for ticker: {ticker}")
+    history_start = (
+        (pd.to_datetime(start_date) - pd.Timedelta(days=90)).strftime("%Y-%m-%d")
+        if start_date
+        else None
+    )
     price_df = get_market_prices_df(
-        ticker, start_date=start_date, end_date=end_date
+        ticker, start_date=history_start, end_date=end_date
     )
     if price_df.empty:
         return pd.DataFrame()
@@ -213,10 +223,16 @@ def compute_ticker_features(
         feat_df[col] = feat_df[f"feat_{col}"]
     feat_df["volume"] = feat_df["feat_volume"].fillna(0).astype(int)
 
-    # 5. Cold-start truncation
-    return feat_df.iloc[config.features.cold_start_rows :].reset_index(
-        drop=True
-    )
+    # 5. Filter to requested start_date or apply cold-start truncation
+    if start_date:
+        feat_df = feat_df[feat_df["date"] >= pd.to_datetime(start_date)].reset_index(
+            drop=True
+        )
+    else:
+        feat_df = feat_df.iloc[config.features.cold_start_rows :].reset_index(
+            drop=True
+        )
+    return feat_df
 
 
 def validate_features(df: pd.DataFrame) -> None:
